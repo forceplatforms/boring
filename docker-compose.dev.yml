@@ -1,0 +1,69 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: complianceguard-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: complianceguard
+      POSTGRES_PASSWORD: devpassword123
+      POSTGRES_DB: complianceguard
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"  # Host:Container (avoiding conflict with local PostgreSQL)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U complianceguard"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - complianceguard-network
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: complianceguard-web
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Application
+      - ENVIRONMENT=development
+      - DEBUG=True
+      - LOG_LEVEL=INFO
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-key-change-this-in-production-min-32-chars}
+
+      # Database (internal docker network)
+      - DATABASE_URL=postgresql://complianceguard:devpassword123@postgres:5432/complianceguard
+
+      # S3 Configuration
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - S3_REGION=${S3_REGION:-us-east-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+
+      # Landing AI
+      - LANDING_AI_API_KEY=${LANDING_AI_API_KEY}
+      - LANDING_AI_BASE_URL=${LANDING_AI_BASE_URL:-https://api.va.landing.ai/v1}
+      - LANDING_AI_TIMEOUT_SECONDS=${LANDING_AI_TIMEOUT_SECONDS:-120}
+      - LANDING_AI_MAX_RETRIES=${LANDING_AI_MAX_RETRIES:-3}
+    volumes:
+      # Mount source for hot reload in development
+      - ./src:/app/src:ro
+      - ./migrations:/app/migrations:ro
+      # Mount AWS credentials from host machine
+      - ~/.aws:/root/.aws:ro
+    ports:
+      - "8000:8000"
+    networks:
+      - complianceguard-network
+    command: uvicorn complianceguard.main:app --host 0.0.0.0 --port 8000 --reload
+
+networks:
+  complianceguard-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
