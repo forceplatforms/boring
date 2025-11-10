@@ -1,4 +1,5 @@
 services:
+  # PostgreSQL Database
   postgres:
     image: postgres:15-alpine
     container_name: complianceguard-postgres
@@ -19,6 +20,80 @@ services:
     networks:
       - complianceguard-network
 
+  # Etcd - Milvus metadata storage
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    container_name: complianceguard-etcd
+    restart: unless-stopped
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - etcd_data:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - complianceguard-network
+
+  # MinIO - Milvus object storage
+  minio:
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    container_name: complianceguard-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    ports:
+      - "9000:9000"  # API
+      - "9001:9001"  # Console
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - complianceguard-network
+
+  # Milvus Standalone
+  milvus:
+    image: milvusdb/milvus:v2.4.0
+    container_name: complianceguard-milvus
+    restart: unless-stopped
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: minioadmin
+      MINIO_SECRET_ACCESS_KEY: minioadmin
+    volumes:
+      - milvus_data:/var/lib/milvus
+    ports:
+      - "19530:19530"  # Milvus gRPC
+      - "9091:9091"    # Milvus metrics
+    command: ["milvus", "run", "standalone"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+    networks:
+      - complianceguard-network
+
+  # Web Application
   web:
     build:
       context: .
@@ -27,6 +102,8 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
+        condition: service_healthy
+      milvus:
         condition: service_healthy
     environment:
       # Application
@@ -43,6 +120,16 @@ services:
       - S3_REGION=${S3_REGION:-us-east-1}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+
+      # Indexing S3 bucket for page images
+      - INDEXING_S3_BUCKET_NAME=${INDEXING_S3_BUCKET_NAME:-complianceguard-page-images}
+
+      # Milvus Configuration (internal docker network)
+      - INDEXING_MILVUS_URI=http://milvus:19530
+      - INDEXING_DEFAULT_COLLECTION=${INDEXING_DEFAULT_COLLECTION:-ingested_documents}
+
+      # Modal (ColPali embeddings service)
+      - INDEXING_MODAL_URL=${INDEXING_MODAL_URL}
 
       # Landing AI
       - LANDING_AI_API_KEY=${LANDING_AI_API_KEY}
@@ -67,3 +154,6 @@ networks:
 
 volumes:
   postgres_data:
+  etcd_data:
+  minio_data:
+  milvus_data:

@@ -33,18 +33,19 @@ class MilvusRetriever:
 
     def create_collection(self) -> None:
         """Create a new Milvus collection for storing multi-vector embeddings.
-        
+
         Schema:
         - pk: Primary key (auto-generated)
         - vector: The embedding vector (FLOAT_VECTOR)
         - seq_id: Sequence position in the original embedding list (INT16)
         - doc_id: Document ID this embedding belongs to (INT64)
         - doc: Document metadata (filepath, etc.) stored in first vector only (VARCHAR)
+        - page_image_url: S3 URL or local path to the page image (VARCHAR)
         """
         # Drop existing collection if present
         if self.client.has_collection(collection_name=self.collection_name):
             self.client.drop_collection(collection_name=self.collection_name)
-        
+
         # Define schema
         schema = self.client.create_schema(
             auto_id=True,
@@ -57,6 +58,8 @@ class MilvusRetriever:
         schema.add_field(field_name="seq_id", datatype=DataType.INT16)
         schema.add_field(field_name="doc_id", datatype=DataType.INT64)
         schema.add_field(field_name="doc", datatype=DataType.VARCHAR, max_length=65535)
+        schema.add_field(field_name="page_image_url", datatype=DataType.VARCHAR, max_length=2048)
+        schema.add_field(field_name="file_hash", datatype=DataType.VARCHAR, max_length=64)
 
         self.client.create_collection(
             collection_name=self.collection_name, schema=schema
@@ -112,21 +115,25 @@ class MilvusRetriever:
 
     def insert(self, data: Dict[str, Any]) -> None:
         """Insert a document's multi-vector embeddings into the collection.
-        
+
         Args:
             data: Dictionary containing:
                 - colbert_vecs: numpy array of shape (seq_length, dim)
                 - doc_id: Unique document identifier
                 - filepath: Document filepath (optional metadata)
+                - page_image_url: S3 URL or local path to page image (optional)
+                - file_hash: SHA-256 hash of the file (optional)
         """
         colbert_vecs = data["colbert_vecs"]
         doc_id = data["doc_id"]
         filepath = data.get("filepath", "")
-        
+        page_image_url = data.get("page_image_url", "")
+        file_hash = data.get("file_hash", "")
+
         seq_length = len(colbert_vecs)
-        
+
         # Prepare data: each vector becomes a separate row
-        # Only the first vector stores the filepath metadata
+        # Only the first vector stores the filepath, page_image_url, and file_hash metadata
         insert_data = []
         for i in range(seq_length):
             insert_data.append({
@@ -134,29 +141,31 @@ class MilvusRetriever:
                 "seq_id": i,
                 "doc_id": doc_id,
                 "doc": filepath if i == 0 else "",
+                "page_image_url": page_image_url if i == 0 else "",
+                "file_hash": file_hash if i == 0 else "",
             })
-        
+
         self.client.insert(self.collection_name, insert_data)
 
-    def search(self, query_embedding: np.ndarray, topk: int = 5) -> List[Tuple[float, int, str]]:
+    def search(self, query_embedding: np.ndarray, topk: int = 5) -> List[Tuple[float, int, str, str, str]]:
         """Search for most relevant documents using normalized MaxSim scoring.
-        
+
         Process:
         1. Perform initial vector search for each query token embedding
         2. Collect candidate document IDs
         3. Rerank candidates using full normalized MaxSim calculation
-        
+
         Normalized MaxSim formula:
         score(query, doc) = (Σ max(similarity(q_i, d_j)) for all query tokens i) / num_query_tokens
-        
+
         This normalization ensures scores are comparable across queries with different lengths.
-        
+
         Args:
             query_embedding: Query embeddings array of shape (num_tokens, dim)
             topk: Number of top results to return
-            
+
         Returns:
-            List of tuples (normalized_score, doc_id, filepath) sorted by score (highest first)
+            List of tuples (normalized_score, doc_id, filepath, page_image_url, file_hash) sorted by score (highest first)
         """
         search_params = {"metric_type": "IP", "params": {}}
         
@@ -166,7 +175,7 @@ class MilvusRetriever:
             self.collection_name,
             query_embedding.tolist() if isinstance(query_embedding, np.ndarray) else query_embedding,
             limit=50,  # Retrieve top 50 for each query token
-            output_fields=["vector", "seq_id", "doc_id", "doc"],
+            output_fields=["vector", "seq_id", "doc_id", "doc", "page_image_url", "file_hash"],
             search_params=search_params,
         )
         
@@ -177,9 +186,9 @@ class MilvusRetriever:
                 doc_ids.add(result["entity"]["doc_id"])
         
         # Rerank documents using full MaxSim calculation
-        def rerank_single_doc(doc_id: int) -> Tuple[float, int, str]:
+        def rerank_single_doc(doc_id: int) -> Tuple[float, int, str, str]:
             """Compute normalized MaxSim score for a single document.
-            
+
             Retrieves all embeddings for the document and computes:
             score = (Σ max(dot(query_token_i, doc_token_j)) for all i) / num_query_tokens
             """
@@ -187,34 +196,36 @@ class MilvusRetriever:
             doc_colbert_vecs = self.client.query(
                 collection_name=self.collection_name,
                 filter=f"doc_id == {doc_id}",
-                output_fields=["seq_id", "vector", "doc"],
+                output_fields=["seq_id", "vector", "doc", "page_image_url", "file_hash"],
                 limit=1000,  # Max sequence length we support
             )
-            
+
             if not doc_colbert_vecs:
-                return (0.0, doc_id, "")
-            
+                return (0.0, doc_id, "", "", "")
+
             # Stack document vectors into matrix
             doc_vecs = np.vstack([
                 vec["vector"] for vec in doc_colbert_vecs
             ])
-            
-            # Get filepath from first vector
+
+            # Get filepath, page_image_url, and file_hash from first vector
             filepath = doc_colbert_vecs[0].get("doc", "")
-            
+            page_image_url = doc_colbert_vecs[0].get("page_image_url", "")
+            file_hash = doc_colbert_vecs[0].get("file_hash", "")
+
             # Compute MaxSim: for each query token, find max similarity to any doc token
             # Shape: (num_query_tokens, num_doc_tokens)
             similarity_matrix = np.dot(query_embedding, doc_vecs.T)
-            
+
             # For each query token, take maximum similarity
             # Then sum across all query tokens
             maxsim_score = similarity_matrix.max(axis=1).sum()
-            
+
             # Normalize by number of query tokens to get average similarity per token
             num_query_tokens = query_embedding.shape[0]
             normalized_maxsim_score = maxsim_score / num_query_tokens
-            
-            return (float(normalized_maxsim_score), doc_id, filepath)
+
+            return (float(normalized_maxsim_score), doc_id, filepath, page_image_url, file_hash)
         
         # Parallel reranking for efficiency
         scores = []
@@ -232,29 +243,30 @@ class MilvusRetriever:
 
     def get_document_by_id(self, doc_id: int) -> Dict[str, Any]:
         """Retrieve all embeddings and metadata for a document.
-        
+
         Args:
             doc_id: Document ID
-            
+
         Returns:
             Dictionary with document embeddings and metadata
         """
         results = self.client.query(
             collection_name=self.collection_name,
             filter=f"doc_id == {doc_id}",
-            output_fields=["seq_id", "vector", "doc"],
+            output_fields=["seq_id", "vector", "doc", "page_image_url"],
             limit=1000,
         )
-        
+
         if not results:
             return {}
-        
+
         # Sort by sequence ID
         results.sort(key=lambda x: x["seq_id"])
-        
+
         return {
             "doc_id": doc_id,
             "filepath": results[0].get("doc", ""),
+            "page_image_url": results[0].get("page_image_url", ""),
             "embeddings": np.vstack([r["vector"] for r in results]),
             "num_tokens": len(results)
         }

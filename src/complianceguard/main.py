@@ -38,6 +38,8 @@ app = FastAPI(
     ### Features
 
     * 📄 **Document Management**: Upload and manage CISO reports and SEC filings
+    * 📦 **Batch Document Ingest**: Upload multiple PDFs with metadata for semantic search
+    * 🔍 **Semantic Search**: Query documents using natural language with ColPali embeddings
     * 🔍 **Compliance Scanning**: Trigger AI-powered compliance analysis
     * ⚠️ **Violation Detection**: Identify material omissions and misstatements
     * 📊 **Analytics**: Track violations, trends, and remediation status
@@ -48,8 +50,15 @@ app = FastAPI(
     * SOX (Sarbanes-Oxley Act)
     * GDPR, CCPA, HIPAA (Coming soon)
 
-    ### API Flow
+    ### API Flows
 
+    **Document Ingestion & Search:**
+    1. Batch ingest PDFs via `/api/v1/ingest`
+    2. Documents are indexed with ColPali embeddings in Milvus
+    3. Query documents via `/api/v1/query` with natural language
+    4. Get ranked results with page images and metadata
+
+    **Compliance Analysis:**
     1. Upload CISO report (PDF/DOCX)
     2. Upload SEC filing (PDF/DOCX)
     3. Trigger compliance scan
@@ -112,6 +121,8 @@ async def root():
         "endpoints": {
             "health": "/health",
             "documents": "/api/v1/documents",
+            "ingest": "/api/v1/ingest",
+            "query": "/api/v1/query",
             "scans": "/api/v1/scans",
             "violations": "/api/v1/violations",
         },
@@ -183,12 +194,24 @@ async def liveness():
 
 
 # Import and register API routers
-from complianceguard.api.v1 import documents, scans, violations
+from complianceguard.api.v1 import documents, ingest, query, scans, violations
 
 app.include_router(
     documents.router,
     prefix=settings.api_v1_prefix,
     tags=["Documents"],
+)
+
+app.include_router(
+    ingest.router,
+    prefix=settings.api_v1_prefix,
+    tags=["Ingest"],
+)
+
+app.include_router(
+    query.router,
+    prefix=settings.api_v1_prefix,
+    tags=["Query"],
 )
 
 app.include_router(

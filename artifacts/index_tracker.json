@@ -1,15 +1,27 @@
 {
   "indexed_documents": [
     {
-      "filepath": "/Users/tilaksharma/VsCodeProjects/boring/src/complianceguard/resources/molorag.pdf",
-      "file_hash": "dd5252cb0b2f0997991c6923a592838ce4c02037fdf400d6d78e0c44ec951d03",
-      "filename": "molorag.pdf",
-      "collection_name": "example_docs",
-      "num_pages": 22,
-      "indexed_at": "2025-11-09T21:24:54.270532",
+      "filepath": "/Users/hrishikeshkakkad/Documents/boring/resources/sample_documents/test_document.pdf",
+      "file_hash": "3df79d34abbca99308e79cb94461c1893582604d68329a41fd4bec1885e6adb4",
+      "filename": "test_document.pdf",
+      "collection_name": "s3_upload_test",
+      "num_pages": 1,
+      "indexed_at": "2025-11-10T10:07:28.962007",
       "metadata": {
-        "batch_size": 4,
-        "milvus_uri": "./artifacts/milvus_example.db"
+        "batch_size": 2,
+        "milvus_uri": "./artifacts/milvus_s3_test.db"
+      }
+    },
+    {
+      "filepath": "/Users/hrishikeshkakkad/Documents/boring/resources/sample_documents/9a44b30b-a2de-4692-8899-87e8afa66a19.pdf",
+      "file_hash": "1c16f372da0bc1628bd409af2fb46e167a940d06fcc6723d09302cd0ed086985",
+      "filename": "9a44b30b-a2de-4692-8899-87e8afa66a19.pdf",
+      "collection_name": "example_docs",
+      "num_pages": 124,
+      "indexed_at": "2025-11-10T10:28:54.128726",
+      "metadata": {
+        "batch_size": 2,
+        "milvus_uri": "./artifacts/milvus.db"
       }
     }
   ]

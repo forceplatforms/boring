@@ -5,37 +5,55 @@ Run this script after you've indexed documents using the DocumentIndex.
 This is useful for quickly testing searches without re-indexing.
 
 Usage:
-    python search_example.py
-    python search_example.py --index-name my_docs
-    python search_example.py --query "your search query"
+    .venv/bin/python src/complianceguard/indexing/search_example.py
+    .venv/bin/python src/complianceguard/indexing/search_example.py --index-name my_docs
+    .venv/bin/python src/complianceguard/indexing/search_example.py --query "your search query"
 """
 
 import argparse
+from pathlib import Path
 
+from complianceguard.config import get_settings
 from complianceguard.indexing import DocumentIndex
 
 
-def run_interactive_search(index_name: str = "example_docs", milvus_uri: str = "./artifacts/milvus_example.db"):
+# Get project root directory (3 levels up from this file)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+
+
+def run_interactive_search(
+    index_name: str | None = None,
+    milvus_uri: str | None = None,
+    topk: int | None = None
+):
     """Run interactive search mode."""
+    # Get settings
+    settings = get_settings()
+
+    # Use provided values or config defaults
+    index_name = index_name or settings.indexing_default_collection
+    milvus_uri = milvus_uri or str(PROJECT_ROOT / "artifacts" / "milvus_example.db")
+    topk = topk or settings.indexing_default_topk
+
     # Connect to existing index
     index = DocumentIndex(index_name=index_name, milvus_uri=milvus_uri)
 
     # Check if index has data
     stats = index.get_stats()
     print("=" * 80)
-    print(f"Connected to index: {stats['index_name']}")
-    print(f"Total documents: {stats['total_documents']}")
+    print(f"✓ Connected to index: {stats['index_name']}")
+    print(f"  Total documents: {stats['total_documents']}")
     print("=" * 80)
 
     if stats['total_documents'] == 0:
-        print("\n❌ No documents found in index.")
-        print("\nPlease index documents first:")
-        print("  python -c 'from complianceguard.indexing.example_usage import example_basic_usage; example_basic_usage()'")
+        print("\n⚠️  No documents found in index.")
+        print("\n💡 Please index documents first:")
+        print("  .venv/bin/python -c 'from complianceguard.indexing.example_usage import example_basic_usage; example_basic_usage()'")
         return
 
-    print("\nIndexed documents:")
+    print("\n📚 Indexed documents:")
     for doc in stats['documents']:
-        print(f"  - {doc['filepath']}")
+        print(f"   - {Path(doc['filepath']).name}")
 
     print("\n" + "=" * 80)
     print("Interactive Search Mode")
@@ -54,17 +72,19 @@ def run_interactive_search(index_name: str = "example_docs", milvus_uri: str = "
                 break
 
             # Perform search
-            results = index.search(query, topk=5)
+            results = index.search(query, topk=topk)
 
             if results:
-                print(f"\n✓ Found {len(results)} results:\n")
-                for rank, (score, page_num, filepath) in enumerate(results, 1):
+                print(f"\n✓ Found {len(results)} result(s):\n")
+                for rank, (score, page_num, filepath, page_url) in enumerate(results, 1):
                     print(f"  {rank}. Score: {score:.4f}")
                     print(f"     Page: {page_num}")
-                    print(f"     File: {filepath}")
+                    print(f"     File: {Path(filepath).name}")
+                    if page_url:
+                        print(f"     📷 Image: {page_url}")
                     print()
             else:
-                print("\n✗ No results found.\n")
+                print("\n⚠️  No results found.\n")
 
     except KeyboardInterrupt:
         print("\n\nExiting search mode. Goodbye!")
@@ -72,8 +92,21 @@ def run_interactive_search(index_name: str = "example_docs", milvus_uri: str = "
         print(f"\n❌ Error during search: {e}")
 
 
-def run_single_query(query: str, index_name: str = "example_docs", milvus_uri: str = "./artifacts/milvus_example.db", topk: int = 5):
+def run_single_query(
+    query: str,
+    index_name: str | None = None,
+    milvus_uri: str | None = None,
+    topk: int | None = None
+):
     """Run a single search query."""
+    # Get settings
+    settings = get_settings()
+
+    # Use provided values or config defaults
+    index_name = index_name or settings.indexing_default_collection
+    milvus_uri = milvus_uri or str(PROJECT_ROOT / "artifacts" / "milvus_example.db")
+    topk = topk or settings.indexing_default_topk
+
     # Connect to existing index
     index = DocumentIndex(index_name=index_name, milvus_uri=milvus_uri)
 
@@ -81,7 +114,7 @@ def run_single_query(query: str, index_name: str = "example_docs", milvus_uri: s
     stats = index.get_stats()
 
     if stats['total_documents'] == 0:
-        print("❌ No documents found in index. Please index documents first.")
+        print("⚠️  No documents found in index. Please index documents first.")
         return
 
     print(f"Searching in index '{index_name}' with {stats['total_documents']} document(s)...")
@@ -91,12 +124,15 @@ def run_single_query(query: str, index_name: str = "example_docs", milvus_uri: s
     results = index.search(query, topk=topk)
 
     if results:
-        print(f"✓ Found {len(results)} results:\n")
-        for rank, (score, page_num, filepath) in enumerate(results, 1):
+        print(f"✓ Found {len(results)} result(s):\n")
+        for rank, (score, page_num, filepath, page_url) in enumerate(results, 1):
             print(f"{rank}. Score: {score:.4f} | Page: {page_num}")
-            print(f"   File: {filepath}\n")
+            print(f"   File: {Path(filepath).name}")
+            if page_url:
+                print(f"   📷 Image: {page_url}")
+            print()
     else:
-        print("✗ No results found.")
+        print("⚠️  No results found.")
 
 
 def main():
@@ -123,15 +159,15 @@ Examples:
     parser.add_argument(
         '--index-name',
         type=str,
-        default='example_docs',
-        help='Name of the index to search (default: example_docs)'
+        default=None,
+        help='Name of the index to search (default: from config)'
     )
 
     parser.add_argument(
         '--milvus-uri',
         type=str,
-        default='./artifacts/milvus_example.db',
-        help='Path to Milvus database (default: ./artifacts/milvus_example.db)'
+        default=None,
+        help='Path to Milvus database (default: from config)'
     )
 
     parser.add_argument(
@@ -143,8 +179,8 @@ Examples:
     parser.add_argument(
         '--topk',
         type=int,
-        default=5,
-        help='Number of results to return (default: 5)'
+        default=None,
+        help='Number of results to return (default: from config)'
     )
 
     args = parser.parse_args()

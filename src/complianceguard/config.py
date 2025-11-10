@@ -92,6 +92,25 @@ class Settings(BaseSettings):
     violation_severity_levels: List[str] = Field(default=["critical", "high", "medium", "low"])
     max_parallel_document_comparisons: int = Field(default=10, ge=1, le=50)
 
+    # Document Indexing & Search Settings
+    indexing_modal_url: str = Field(
+        default="https://fluidzero--colpali-indexing-fastapi-app.modal.run/get_embeddings"
+    )
+    indexing_milvus_uri: str = Field(default="./artifacts/milvus.db")
+    indexing_tracker_file: str = Field(default="./artifacts/index_tracker.json")
+    indexing_default_collection: str = Field(default="documents")
+    indexing_embedding_dim: int = Field(default=128, ge=64, le=512)
+    indexing_batch_size: int = Field(default=4, ge=1, le=16)
+    indexing_default_topk: int = Field(default=5, ge=1, le=100)
+    indexing_artifacts_dir: str = Field(default="./artifacts")
+    indexing_resources_dir: str = Field(default="./resources")
+
+    # S3 Settings for Page Image Storage
+    indexing_s3_bucket_name: str = Field(default="complianceguard-page-images")
+    indexing_s3_enabled: bool = Field(default=True)
+    indexing_s3_make_public: bool = Field(default=True)
+    indexing_local_fallback: bool = Field(default=True)  # Store locally if S3 fails
+
     # Monitoring & Observability
     sentry_dsn: Optional[str] = Field(default=None)
     enable_metrics: bool = Field(default=True)

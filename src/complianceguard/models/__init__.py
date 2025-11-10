@@ -31,6 +31,9 @@ from complianceguard.models.scan_job import (
     ScanType,
     ScanStatus,
 )
+from complianceguard.models.ingested_document import (
+    IngestedDocument,
+)
 
 __all__ = [
     # Base
@@ -55,4 +58,6 @@ __all__ = [
     "ScanJob",
     "ScanType",
     "ScanStatus",
+    # Ingested Document
+    "IngestedDocument",
 ]

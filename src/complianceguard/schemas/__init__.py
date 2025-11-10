@@ -37,6 +37,16 @@ from complianceguard.schemas.violation import (
     ViolationSummary,
     ViolationUpdateRequest,
 )
+from complianceguard.schemas.ingested_document import (
+    BatchIngestResponse,
+    BatchIngestResult,
+    IngestDocumentResponse,
+    IngestedDocumentStatsResponse,
+    IngestedDocumentSummary,
+    QueryRequest,
+    QueryResponse,
+    QueryResultItem,
+)
 
 __all__ = [
     # Base
@@ -70,4 +80,13 @@ __all__ = [
     "ScanSummary",
     "ScanListFilters",
     "ScanStatsResponse",
+    # Ingested Document
+    "IngestDocumentResponse",
+    "BatchIngestResult",
+    "BatchIngestResponse",
+    "QueryRequest",
+    "QueryResponse",
+    "QueryResultItem",
+    "IngestedDocumentSummary",
+    "IngestedDocumentStatsResponse",
 ]

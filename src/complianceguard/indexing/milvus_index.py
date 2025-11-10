@@ -4,19 +4,27 @@ This module provides a class-based interface for indexing PDF documents into Mil
 and performing MaxSim-based semantic search using embeddings from a hosted Modal service.
 """
 
+import asyncio
 import base64
+import hashlib
 import io
 import os
+from typing import Optional
 
 import numpy as np
-import requests
+import httpx
 from pdf2image import convert_from_path
 from PIL import Image
 from pymilvus import MilvusClient
 from tqdm import tqdm
 
+from complianceguard.config import get_settings
 from complianceguard.indexing.index_tracker import IndexTracker
 from complianceguard.indexing.milvus_retriever import MilvusRetriever
+from complianceguard.indexing.page_storage import (
+    batch_upload_pages_to_s3,
+    ensure_page_images_bucket_exists,
+)
 
 
 class DocumentIndex:
@@ -31,48 +39,55 @@ class DocumentIndex:
     Each instance manages a specific vector index (collection) in Milvus.
 
     Example:
+        >>> from complianceguard.indexing import DocumentIndex
         >>> index = DocumentIndex(index_name="my_docs")
         >>> index.index_document("report.pdf")
         >>> results = index.search("What is the revenue?", topk=5)
         >>> index.print_results("What is the revenue?", results)
     """
-    
-    # Modal service endpoint
-    MODAL_URL = "https://fluidzero--colpali-indexing-fastapi-app.modal.run/get_embeddings"
-    
+
     def __init__(
         self,
-        index_name: str,
-        milvus_uri: str = "./artifacts/milvus.db",
-        dim: int = 128,
-        tracker_file: str = "./artifacts/index_tracker.json"
+        index_name: Optional[str] = None,
+        milvus_uri: Optional[str] = None,
+        dim: Optional[int] = None,
+        tracker_file: Optional[str] = None,
+        modal_url: Optional[str] = None
     ):
         """Initialize the document index.
 
         Args:
-            index_name: Name of the vector index (Milvus collection) to use
-            milvus_uri: URI for Milvus connection (default: "./artifacts/milvus.db")
-            dim: Dimensionality of ColPali embeddings (default: 128)
-            tracker_file: Path to the index tracker file (default: "./artifacts/index_tracker.json")
+            index_name: Name of the vector index (Milvus collection).
+                       If None, uses config default.
+            milvus_uri: URI for Milvus connection. If None, uses config default.
+            dim: Dimensionality of ColPali embeddings. If None, uses config default.
+            tracker_file: Path to the index tracker file. If None, uses config default.
+            modal_url: Modal service endpoint URL. If None, uses config default.
         """
-        self.index_name = index_name
-        self.milvus_uri = milvus_uri
-        self.dim = dim
-        
+        # Get settings from config
+        settings = get_settings()
+
+        # Use provided values or fall back to config defaults
+        self.index_name = index_name or settings.indexing_default_collection
+        self.milvus_uri = milvus_uri or settings.indexing_milvus_uri
+        self.dim = dim or settings.indexing_embedding_dim
+        self.modal_url = modal_url or settings.indexing_modal_url
+        tracker_file = tracker_file or settings.indexing_tracker_file
+
         # Ensure directory exists for local file URIs
-        if not milvus_uri.startswith(("http://", "https://")):
-            dir_path = os.path.dirname(milvus_uri)
+        if not self.milvus_uri.startswith(("http://", "https://")):
+            dir_path = os.path.dirname(self.milvus_uri)
             if dir_path and not os.path.exists(dir_path):
                 os.makedirs(dir_path, exist_ok=True)
         
         # Initialize Milvus client
-        self.client = MilvusClient(uri=milvus_uri)
-        
+        self.client = MilvusClient(uri=self.milvus_uri)
+
         # Initialize retriever
         self.retriever = MilvusRetriever(
             milvus_client=self.client,
-            collection_name=index_name,
-            dim=dim
+            collection_name=self.index_name,
+            dim=self.dim
         )
         
         # Initialize index tracker
@@ -89,6 +104,9 @@ class DocumentIndex:
             self.retriever.create_index()
             self.retriever.create_scalar_index()
             print(f"Collection '{self.index_name}' created successfully")
+            # Load the newly created collection
+            self.client.load_collection(collection_name=self.index_name)
+            print(f"Collection '{self.index_name}' loaded")
         else:
             print(f"Using existing collection: {self.index_name}")
             # Ensure collection is loaded
@@ -107,60 +125,62 @@ class DocumentIndex:
         image.save(buffer, format="PNG")
         return base64.b64encode(buffer.getvalue()).decode("utf-8")
     
-    def _get_embeddings_from_modal(
+    async def _get_embeddings_from_modal(
         self,
         images: list[Image.Image] | None = None,
         queries: list[str] | None = None
     ) -> dict:
-        """Get embeddings from the Modal service.
-        
+        """Get embeddings from the Modal service (async).
+
         Args:
             images: List of PIL Image objects (optional)
             queries: List of text queries (optional)
-            
+
         Returns:
             Dictionary with 'image_embeddings' and/or 'query_embeddings'
-            
+
         Raises:
-            requests.exceptions.RequestException: If the API call fails
+            httpx.HTTPStatusError: If the API call fails
         """
         payload = {}
-        
+
         # Process images if provided
         if images:
             print(f"Encoding {len(images)} image(s) to base64...")
             base64_images = [self._image_to_base64(img) for img in images]
             payload["images"] = base64_images
-        
+
         # Process queries if provided
         if queries:
             payload["queries"] = queries
-        
+
         if not payload:
             raise ValueError("Either images or queries must be provided")
-        
+
         headers = {"Content-Type": "application/json", "accept": "application/json"}
 
         print("Sending request to Modal service...")
         try:
-            response = requests.post(
-                self.MODAL_URL,
-                headers=headers,
-                json=payload,
-                timeout=300
-            )
-            response.raise_for_status()
+            # Use async httpx client with proper timeouts
+            timeout = httpx.Timeout(300.0, connect=10.0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    self.modal_url,
+                    headers=headers,
+                    json=payload,
+                )
+                response.raise_for_status()
 
-            data = response.json()
-            print("Received embeddings from Modal service")
+                data = response.json()
+                print("Received embeddings from Modal service")
 
-            return data
-            
-        except requests.exceptions.HTTPError as e:
+                return data
+
+        except httpx.HTTPStatusError as e:
             print(f"HTTP error occurred: {e}")
-            print(f"Response: {response.text}")
+            print(f"Response: {e.response.text}")
             raise
-        except requests.exceptions.RequestException as e:
+        except httpx.RequestError as e:
             print(f"Request error: {e}")
             raise
     
@@ -182,21 +202,22 @@ class DocumentIndex:
             print(f"Error converting PDF: {e}")
             raise
     
-    def index_document(self, pdf_path: str, batch_size: int = 4, force: bool = False) -> int:
+    async def index_document(self, pdf_path: str, batch_size: int = 4, force: bool = False, file_hash: str = None) -> int:
         """Index a single PDF document.
-        
+
         Args:
             pdf_path: Path to the PDF file
             batch_size: Number of images to process in each batch (default: 4)
             force: Force re-indexing even if document is already indexed (default: False)
-            
+            file_hash: SHA-256 hash of the file for metadata lookup (optional)
+
         Returns:
             Number of pages indexed (0 if skipped)
         """
         print(f"\n{'='*60}")
         print(f"Indexing document: {pdf_path}")
         print(f"{'='*60}")
-        
+
         # Check if document is already indexed
         if not force and self.tracker.is_indexed(pdf_path, self.index_name):
             indexed_info = self.tracker.get_indexed_info(pdf_path, self.index_name)
@@ -206,45 +227,80 @@ class DocumentIndex:
             print("   Skipping to avoid duplicates...")
             print("   (Use force=True to re-index)")
             return 0
-        
-        # Convert PDF to images
-        images = self._pdf_to_images(pdf_path)
+
+        # Convert PDF to images (run in thread pool to avoid blocking)
+        images = await asyncio.to_thread(self._pdf_to_images, pdf_path)
         num_pages = len(images)
-        
-        # Get the next available doc_id
-        existing_docs = self.retriever.get_all_doc_ids()
+
+        # Compute document hash for consistent S3 keys
+        doc_hash = hashlib.sha256(pdf_path.encode()).hexdigest()[:16]
+
+        # Upload page images to S3 (async operation)
+        settings = get_settings()
+        page_image_urls = []
+        if settings.indexing_s3_enabled:
+            print(f"\n📤 Uploading {num_pages} page images to S3...")
+            try:
+                # Await async upload
+                page_image_urls = await batch_upload_pages_to_s3(
+                    images,
+                    pdf_path,
+                    start_page=1,
+                    doc_hash=doc_hash
+                )
+                print(f"✓ Uploaded {len([u for u in page_image_urls if u])} pages to S3")
+            except Exception as e:
+                print(f"⚠️  S3 upload failed: {e}")
+                if settings.indexing_local_fallback:
+                    print("   Continuing with local fallback...")
+                    page_image_urls = [""] * num_pages
+        else:
+            page_image_urls = [""] * num_pages
+
+        # Get the next available doc_id (run in thread pool to avoid blocking)
+        existing_docs = await asyncio.to_thread(self.retriever.get_all_doc_ids)
         next_doc_id = max([doc_id for doc_id, _ in existing_docs], default=-1) + 1
-        
+
         # Process images in batches
         for i in tqdm(range(0, num_pages, batch_size), desc="Processing batches"):
             batch_images = images[i:i + batch_size]
-            
+
             # Get embeddings from Modal service
-            result = self._get_embeddings_from_modal(images=batch_images)
-            
+            result = await self._get_embeddings_from_modal(images=batch_images)
+
             if "image_embeddings" not in result:
                 raise ValueError("No image embeddings returned from Modal service")
-            
+
             # Insert each page's embeddings into Milvus
             for page_idx, embedding in enumerate(result["image_embeddings"]):
                 actual_page_idx = i + page_idx
                 doc_id = next_doc_id + actual_page_idx
-                
+
                 # Convert to numpy array
                 embedding_array = np.array(embedding, dtype=np.float32)
-                
+
+                # Get S3 URL for this page
+                page_image_url = page_image_urls[actual_page_idx] if actual_page_idx < len(page_image_urls) else ""
+
                 data = {
                     "colbert_vecs": embedding_array,
                     "doc_id": doc_id,
                     "filepath": f"{pdf_path}#page={actual_page_idx + 1}",
+                    "page_image_url": page_image_url or "",
                 }
-                
-                self.retriever.insert(data)
+
+                # Add file_hash if provided (for metadata lookup)
+                if file_hash:
+                    data["file_hash"] = file_hash
+
+                # Insert into Milvus (run in thread pool to avoid blocking)
+                await asyncio.to_thread(self.retriever.insert, data)
         
         print(f"✓ Successfully indexed {num_pages} pages from {pdf_path}")
         
-        # Record in tracker
-        self.tracker.record_indexing(
+        # Record in tracker (run in thread pool to avoid blocking)
+        await asyncio.to_thread(
+            self.tracker.record_indexing,
             filepath=pdf_path,
             collection_name=self.index_name,
             num_pages=num_pages,
@@ -253,9 +309,9 @@ class DocumentIndex:
                 "milvus_uri": self.milvus_uri
             }
         )
-        
-        # Ensure collection is loaded for searching
-        self.client.load_collection(collection_name=self.index_name)
+
+        # Ensure collection is loaded for searching (run in thread pool)
+        await asyncio.to_thread(self.client.load_collection, collection_name=self.index_name)
         
         return num_pages
     
@@ -297,30 +353,30 @@ class DocumentIndex:
             "total_pages": total_pages
         }
     
-    def search(self, query: str, topk: int = 5) -> list[tuple[float, int, str]]:
+    async def search(self, query: str, topk: int = 5) -> list[tuple[float, int, str, str, str]]:
         """Search for documents using a text query with normalized MaxSim scoring.
-        
+
         This method:
         1. Generates ColPali embeddings for the query using Modal service
         2. Performs normalized MaxSim-based search in Milvus
-        3. Returns ranked results with normalized scores
-        
+        3. Returns ranked results with normalized scores and page image URLs
+
         Args:
             query: Text query to search for
             topk: Number of top results to return (default: 5)
-            
+
         Returns:
-            List of tuples (normalized_maxsim_score, doc_id, filepath) sorted by relevance
-            
+            List of tuples (normalized_maxsim_score, doc_id, filepath, page_image_url, file_hash) sorted by relevance
+
         Example:
             >>> index = DocumentIndex("my_index")
-            >>> results = index.search("What is the revenue?", topk=3)
+            >>> results = await index.search("What is the revenue?", topk=3)
             >>> index.print_results("What is the revenue?", results)
         """
         print(f"Searching for: '{query}'")
-        
+
         # Get query embeddings from Modal service
-        result = self._get_embeddings_from_modal(queries=[query])
+        result = await self._get_embeddings_from_modal(queries=[query])
         
         if "query_embeddings" not in result or len(result["query_embeddings"]) == 0:
             raise ValueError("No query embeddings returned from Modal service")
@@ -330,13 +386,13 @@ class DocumentIndex:
         
         print(f"Query embedding shape: {query_embedding.shape}")
         print(f"Performing normalized MaxSim search (top-{topk})...")
-        
-        # Perform search using the retriever
-        results = self.retriever.search(query_embedding, topk=topk)
-        
+
+        # Perform search using the retriever (run in thread pool to avoid blocking)
+        results = await asyncio.to_thread(self.retriever.search, query_embedding, topk=topk)
+
         return results
 
-    def batch_search(self, queries: list[str], topk: int = 5) -> list[list[tuple[float, int, str]]]:
+    def batch_search(self, queries: list[str], topk: int = 5) -> list[list[tuple[float, int, str, str]]]:
         """Search for documents using multiple queries.
 
         Args:
@@ -345,7 +401,7 @@ class DocumentIndex:
 
         Returns:
             List of result lists, one per query. Each result list contains tuples
-            of (normalized_maxsim_score, doc_id, filepath)
+            of (normalized_maxsim_score, doc_id, filepath, page_image_url)
 
         Example:
             >>> index = DocumentIndex("my_index")
@@ -365,15 +421,17 @@ class DocumentIndex:
     def print_results(
         self,
         query: str,
-        results: list[tuple[float, int, str]],
-        show_scores: bool = True
+        results: list[tuple[float, int, str, str]],
+        show_scores: bool = True,
+        show_urls: bool = True
     ) -> None:
         """Pretty print search results.
 
         Args:
             query: The original query
-            results: List of tuples (score, doc_id, filepath) from search()
+            results: List of tuples (score, doc_id, filepath, page_image_url) from search()
             show_scores: Whether to show normalized MaxSim scores (default: True)
+            show_urls: Whether to show page image URLs (default: True)
 
         Example:
             >>> index = DocumentIndex("my_index")
@@ -388,11 +446,13 @@ class DocumentIndex:
             print("No results found.")
             return
 
-        for i, (score, doc_id, filepath) in enumerate(results, 1):
+        for i, (score, doc_id, filepath, page_image_url) in enumerate(results, 1):
             print(f"\n{i}. {filepath}")
             if show_scores:
                 print(f"   Normalized MaxSim Score: {score:.4f}")
             print(f"   Document ID: {doc_id}")
+            if show_urls and page_image_url:
+                print(f"   📷 Page Image: {page_image_url}")
 
         print(f"\n{'='*80}\n")
 
@@ -416,15 +476,16 @@ class DocumentIndex:
         else:
             print(f"Collection '{self.index_name}' does not exist")
     
-    def get_stats(self) -> dict:
+    async def get_stats(self) -> dict:
         """Get statistics about the indexed documents.
-        
+
         Returns:
             Dictionary with index statistics including tracker information
         """
-        all_docs = self.retriever.get_all_doc_ids()
-        tracked_docs = self.tracker.get_all_indexed(collection_name=self.index_name)
-        
+        # Run blocking operations in thread pool
+        all_docs = await asyncio.to_thread(self.retriever.get_all_doc_ids)
+        tracked_docs = await asyncio.to_thread(self.tracker.get_all_indexed, collection_name=self.index_name)
+
         return {
             "index_name": self.index_name,
             "total_documents": len(all_docs),
