@@ -125,6 +125,8 @@ async def root():
             "query": "/api/v1/query",
             "scans": "/api/v1/scans",
             "violations": "/api/v1/violations",
+            "frameworks": "/api/v1/frameworks",
+            "compliance": "/api/v1/compliance",
         },
     }
 
@@ -194,7 +196,7 @@ async def liveness():
 
 
 # Import and register API routers
-from complianceguard.api.v1 import documents, ingest, query, scans, violations
+from complianceguard.api.v1 import compliance, documents, frameworks, ingest, query, scans, violations
 
 app.include_router(
     documents.router,
@@ -224,6 +226,18 @@ app.include_router(
     violations.router,
     prefix=settings.api_v1_prefix,
     tags=["Violations"],
+)
+
+app.include_router(
+    frameworks.router,
+    prefix=settings.api_v1_prefix,
+    tags=["Compliance Frameworks"],
+)
+
+app.include_router(
+    compliance.router,
+    prefix=settings.api_v1_prefix,
+    tags=["Compliance Analysis"],
 )
 
 

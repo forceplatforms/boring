@@ -82,6 +82,14 @@ class Settings(BaseSettings):
     aws_bedrock_max_tokens: int = Field(default=8000, ge=100, le=100000)
     aws_bedrock_temperature: float = Field(default=0.1, ge=0.0, le=1.0)
 
+    # Google Gemini Configuration
+    gemini_api_key: Optional[str] = Field(default=None)
+    gemini_model: str = Field(default="gemini-2.0-flash-exp")  # or gemini-1.5-pro
+    gemini_max_tokens: int = Field(default=8000, ge=100, le=32000)
+    gemini_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
+    gemini_timeout_seconds: int = Field(default=60, ge=1, le=300)
+    gemini_max_retries: int = Field(default=3, ge=0, le=10)
+
     # File Processing Settings
     max_file_size_mb: int = Field(default=50, ge=1, le=500)
     allowed_file_extensions: List[str] = Field(default=[".pdf", ".docx"])

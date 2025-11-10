@@ -136,6 +136,13 @@ services:
       - LANDING_AI_BASE_URL=${LANDING_AI_BASE_URL:-https://api.va.landing.ai/v1}
       - LANDING_AI_TIMEOUT_SECONDS=${LANDING_AI_TIMEOUT_SECONDS:-120}
       - LANDING_AI_MAX_RETRIES=${LANDING_AI_MAX_RETRIES:-3}
+
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash-exp}
+      - GEMINI_MAX_TOKENS=${GEMINI_MAX_TOKENS:-8000}
+      - GEMINI_TEMPERATURE=${GEMINI_TEMPERATURE:-0.1}
+      - GEMINI_TIMEOUT_SECONDS=${GEMINI_TIMEOUT_SECONDS:-120}
+      - GEMINI_MAX_RETRIES=${GEMINI_MAX_RETRIES:-3}
     volumes:
       # Mount source for hot reload in development
       - ./src:/app/src:ro

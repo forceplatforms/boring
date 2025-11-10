@@ -47,6 +47,8 @@ dependencies = [
     "pdf2image>=1.17.0",
     "pymilvus[milvus_lite]>=2.6.0",
     "tqdm>=4.67.0",
+    # AI/ML Services
+    "google-generativeai>=0.8.0",
 ]
 
 [project.optional-dependencies]

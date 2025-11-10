@@ -3,7 +3,7 @@ CRUD operations for ScanJob model.
 Handles database operations for compliance scan job management.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID, uuid4
 
@@ -155,10 +155,10 @@ async def update_scan_job_status(
     scan_job.status = status
 
     if status == "running" and not scan_job.started_at:
-        scan_job.started_at = datetime.utcnow()
+        scan_job.started_at = datetime.now(timezone.utc)
 
     if status in ["completed", "failed", "cancelled"]:
-        scan_job.completed_at = datetime.utcnow()
+        scan_job.completed_at = datetime.now(timezone.utc)
         if scan_job.started_at:
             duration = (scan_job.completed_at - scan_job.started_at).total_seconds()
             scan_job.duration_seconds = int(duration)
