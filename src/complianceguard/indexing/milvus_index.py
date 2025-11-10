@@ -8,7 +8,9 @@ import asyncio
 import base64
 import hashlib
 import io
+import logging
 import os
+import time
 from typing import Optional
 
 import numpy as np
@@ -25,6 +27,8 @@ from complianceguard.indexing.page_storage import (
     batch_upload_pages_to_s3,
     ensure_page_images_bucket_exists,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentIndex:
@@ -99,16 +103,16 @@ class DocumentIndex:
     def _ensure_collection_exists(self) -> None:
         """Ensure the collection exists, creating it if necessary."""
         if not self.client.has_collection(self.index_name):
-            print(f"Collection '{self.index_name}' does not exist. Creating...")
+            logger.info(f"[INDEX] Collection '{self.index_name}' does not exist. Creating...")
             self.retriever.create_collection()
             self.retriever.create_index()
             self.retriever.create_scalar_index()
-            print(f"Collection '{self.index_name}' created successfully")
+            logger.info(f"[INDEX] Collection '{self.index_name}' created successfully")
             # Load the newly created collection
             self.client.load_collection(collection_name=self.index_name)
-            print(f"Collection '{self.index_name}' loaded")
+            logger.info(f"[INDEX] Collection '{self.index_name}' loaded")
         else:
-            print(f"Using existing collection: {self.index_name}")
+            logger.info(f"[INDEX] Using existing collection: {self.index_name}")
             # Ensure collection is loaded
             self.client.load_collection(collection_name=self.index_name)
     
@@ -142,16 +146,21 @@ class DocumentIndex:
         Raises:
             httpx.HTTPStatusError: If the API call fails
         """
+        request_start = time.time()
         payload = {}
 
         # Process images if provided
         if images:
-            print(f"Encoding {len(images)} image(s) to base64...")
+            logger.info(f"[INDEX-EMBED] Encoding {len(images)} image(s) to base64...")
+            encode_start = time.time()
             base64_images = [self._image_to_base64(img) for img in images]
+            encode_time = time.time() - encode_start
+            logger.info(f"[INDEX-EMBED] Images encoded in {encode_time:.3f}s")
             payload["images"] = base64_images
 
         # Process queries if provided
         if queries:
+            logger.info(f"[INDEX-EMBED] Processing {len(queries)} query/queries")
             payload["queries"] = queries
 
         if not payload:
@@ -159,10 +168,11 @@ class DocumentIndex:
 
         headers = {"Content-Type": "application/json", "accept": "application/json"}
 
-        print("Sending request to Modal service...")
+        logger.info(f"[INDEX-EMBED] Sending request to Modal service: {self.modal_url}")
         try:
             # Use async httpx client with proper timeouts
             timeout = httpx.Timeout(300.0, connect=10.0)
+            modal_start = time.time()
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
                     self.modal_url,
@@ -172,34 +182,49 @@ class DocumentIndex:
                 response.raise_for_status()
 
                 data = response.json()
-                print("Received embeddings from Modal service")
+                modal_time = time.time() - modal_start
+                request_total_time = time.time() - request_start
+
+                logger.info(f"[INDEX-EMBED] Received embeddings from Modal service in {modal_time:.3f}s")
+                logger.info(f"[INDEX-EMBED] Total embedding request time: {request_total_time:.3f}s")
+
+                # Log embedding details
+                if "image_embeddings" in data and data["image_embeddings"] is not None:
+                    logger.info(f"[INDEX-EMBED] Received {len(data['image_embeddings'])} image embeddings")
+                if "query_embeddings" in data and data["query_embeddings"] is not None:
+                    logger.info(f"[INDEX-EMBED] Received {len(data['query_embeddings'])} query embeddings")
 
                 return data
 
         except httpx.HTTPStatusError as e:
-            print(f"HTTP error occurred: {e}")
-            print(f"Response: {e.response.text}")
+            logger.error(f"[INDEX-EMBED] HTTP error occurred: {e}")
+            logger.error(f"[INDEX-EMBED] Response status: {e.response.status_code}")
+            logger.error(f"[INDEX-EMBED] Response body: {e.response.text}")
             raise
         except httpx.RequestError as e:
-            print(f"Request error: {e}")
+            logger.error(f"[INDEX-EMBED] Request error: {type(e).__name__}: {e}")
             raise
     
     def _pdf_to_images(self, pdf_path: str) -> list[Image.Image]:
         """Convert PDF to list of PIL Images.
-        
+
         Args:
             pdf_path: Path to PDF file
-            
+
         Returns:
             List of PIL Image objects, one per page
         """
-        print(f"Converting PDF to images: {pdf_path}")
+        logger.info(f"[INDEX-PDF] Converting PDF to images: {pdf_path}")
+        convert_start = time.time()
         try:
             images = convert_from_path(pdf_path)
-            print(f"Converted {len(images)} pages")
+            convert_time = time.time() - convert_start
+            logger.info(f"[INDEX-PDF] Converted {len(images)} pages in {convert_time:.3f}s")
+            logger.info(f"[INDEX-PDF] Average time per page: {convert_time/len(images):.3f}s")
             return images
         except Exception as e:
-            print(f"Error converting PDF: {e}")
+            logger.error(f"[INDEX-PDF] Error converting PDF: {type(e).__name__}: {e}")
+            logger.exception(f"[INDEX-PDF] Full traceback:")
             raise
     
     async def index_document(self, pdf_path: str, batch_size: int = 4, force: bool = False, file_hash: str = None) -> int:
@@ -214,64 +239,92 @@ class DocumentIndex:
         Returns:
             Number of pages indexed (0 if skipped)
         """
-        print(f"\n{'='*60}")
-        print(f"Indexing document: {pdf_path}")
-        print(f"{'='*60}")
+        index_start = time.time()
+        logger.info(f"[INDEX-DOC] ========================================")
+        logger.info(f"[INDEX-DOC] Starting document indexing")
+        logger.info(f"[INDEX-DOC] PDF path: {pdf_path}")
+        logger.info(f"[INDEX-DOC] Batch size: {batch_size}")
+        logger.info(f"[INDEX-DOC] File hash: {file_hash[:16] if file_hash else 'N/A'}...")
+        logger.info(f"[INDEX-DOC] ========================================")
 
         # Check if document is already indexed
         if not force and self.tracker.is_indexed(pdf_path, self.index_name):
             indexed_info = self.tracker.get_indexed_info(pdf_path, self.index_name)
-            print(f"⏭️  Document already indexed in collection '{self.index_name}'")
-            print(f"   Indexed at: {indexed_info['indexed_at']}")
-            print(f"   Pages: {indexed_info['num_pages']}")
-            print("   Skipping to avoid duplicates...")
-            print("   (Use force=True to re-index)")
+            logger.info(f"[INDEX-DOC] Document already indexed in collection '{self.index_name}'")
+            logger.info(f"[INDEX-DOC] Indexed at: {indexed_info['indexed_at']}")
+            logger.info(f"[INDEX-DOC] Pages: {indexed_info['num_pages']}")
+            logger.info(f"[INDEX-DOC] Skipping to avoid duplicates (use force=True to re-index)")
             return 0
 
         # Convert PDF to images (run in thread pool to avoid blocking)
+        logger.info(f"[INDEX-DOC] Step 1/5: Converting PDF to images")
         images = await asyncio.to_thread(self._pdf_to_images, pdf_path)
         num_pages = len(images)
+        logger.info(f"[INDEX-DOC] PDF conversion complete - {num_pages} pages")
 
         # Compute document hash for consistent S3 keys
         doc_hash = hashlib.sha256(pdf_path.encode()).hexdigest()[:16]
+        logger.info(f"[INDEX-DOC] Document hash for S3 keys: {doc_hash}")
 
         # Upload page images to S3 (async operation)
         settings = get_settings()
         page_image_urls = []
         if settings.indexing_s3_enabled:
-            print(f"\n📤 Uploading {num_pages} page images to S3...")
+            logger.info(f"[INDEX-DOC] Step 2/5: Uploading {num_pages} page images to S3")
+            s3_upload_start = time.time()
             try:
-                # Await async upload
+                # Await async upload with index_name for namespacing
                 page_image_urls = await batch_upload_pages_to_s3(
                     images,
                     pdf_path,
                     start_page=1,
-                    doc_hash=doc_hash
+                    doc_hash=doc_hash,
+                    index_name=self.index_name
                 )
-                print(f"✓ Uploaded {len([u for u in page_image_urls if u])} pages to S3")
+                s3_upload_time = time.time() - s3_upload_start
+                uploaded_count = len([u for u in page_image_urls if u])
+                logger.info(f"[INDEX-DOC] S3 upload complete in {s3_upload_time:.3f}s - {uploaded_count}/{num_pages} pages uploaded")
             except Exception as e:
-                print(f"⚠️  S3 upload failed: {e}")
+                s3_upload_time = time.time() - s3_upload_start
+                logger.error(f"[INDEX-DOC] S3 upload failed after {s3_upload_time:.3f}s: {e}")
                 if settings.indexing_local_fallback:
-                    print("   Continuing with local fallback...")
+                    logger.warning(f"[INDEX-DOC] Continuing with local fallback (empty URLs)")
                     page_image_urls = [""] * num_pages
+                else:
+                    raise
         else:
+            logger.info(f"[INDEX-DOC] Step 2/5: S3 upload disabled - using empty URLs")
             page_image_urls = [""] * num_pages
 
         # Get the next available doc_id (run in thread pool to avoid blocking)
+        logger.info(f"[INDEX-DOC] Step 3/5: Getting next available doc_id from Milvus")
         existing_docs = await asyncio.to_thread(self.retriever.get_all_doc_ids)
         next_doc_id = max([doc_id for doc_id, _ in existing_docs], default=-1) + 1
+        logger.info(f"[INDEX-DOC] Next doc_id: {next_doc_id} (found {len(existing_docs)} existing docs)")
 
         # Process images in batches
+        logger.info(f"[INDEX-DOC] Step 4/5: Processing {num_pages} pages in batches of {batch_size}")
+        num_batches = (num_pages + batch_size - 1) // batch_size
+        logger.info(f"[INDEX-DOC] Total batches to process: {num_batches}")
+
+        batch_processing_start = time.time()
         for i in tqdm(range(0, num_pages, batch_size), desc="Processing batches"):
+            batch_num = (i // batch_size) + 1
             batch_images = images[i:i + batch_size]
+            logger.info(f"[INDEX-DOC] Processing batch {batch_num}/{num_batches} - pages {i+1} to {min(i+batch_size, num_pages)}")
+
+            batch_start = time.time()
 
             # Get embeddings from Modal service
+            logger.info(f"[INDEX-DOC] Getting embeddings for batch {batch_num}")
             result = await self._get_embeddings_from_modal(images=batch_images)
 
             if "image_embeddings" not in result:
+                logger.error(f"[INDEX-DOC] No image embeddings returned for batch {batch_num}")
                 raise ValueError("No image embeddings returned from Modal service")
 
             # Insert each page's embeddings into Milvus
+            logger.info(f"[INDEX-DOC] Inserting {len(result['image_embeddings'])} embeddings into Milvus")
             for page_idx, embedding in enumerate(result["image_embeddings"]):
                 actual_page_idx = i + page_idx
                 doc_id = next_doc_id + actual_page_idx
@@ -295,9 +348,16 @@ class DocumentIndex:
 
                 # Insert into Milvus (run in thread pool to avoid blocking)
                 await asyncio.to_thread(self.retriever.insert, data)
-        
-        print(f"✓ Successfully indexed {num_pages} pages from {pdf_path}")
-        
+
+            batch_time = time.time() - batch_start
+            logger.info(f"[INDEX-DOC] Batch {batch_num}/{num_batches} completed in {batch_time:.3f}s")
+
+        batch_processing_time = time.time() - batch_processing_start
+        logger.info(f"[INDEX-DOC] All batches processed in {batch_processing_time:.3f}s")
+        logger.info(f"[INDEX-DOC] Average time per batch: {batch_processing_time/num_batches:.3f}s")
+
+        logger.info(f"[INDEX-DOC] Step 5/5: Recording indexing in tracker and loading collection")
+
         # Record in tracker (run in thread pool to avoid blocking)
         await asyncio.to_thread(
             self.tracker.record_indexing,
@@ -309,10 +369,19 @@ class DocumentIndex:
                 "milvus_uri": self.milvus_uri
             }
         )
+        logger.info(f"[INDEX-DOC] Indexing recorded in tracker")
 
         # Ensure collection is loaded for searching (run in thread pool)
         await asyncio.to_thread(self.client.load_collection, collection_name=self.index_name)
-        
+        logger.info(f"[INDEX-DOC] Collection loaded for searching")
+
+        index_total_time = time.time() - index_start
+        logger.info(f"[INDEX-DOC] ========================================")
+        logger.info(f"[INDEX-DOC] ✓ Successfully indexed {num_pages} pages from {pdf_path}")
+        logger.info(f"[INDEX-DOC] Total indexing time: {index_total_time:.3f}s")
+        logger.info(f"[INDEX-DOC] Average time per page: {index_total_time/num_pages:.3f}s")
+        logger.info(f"[INDEX-DOC] ========================================")
+
         return num_pages
     
     def index_documents(self, pdf_paths: list[str], batch_size: int = 4, force: bool = False) -> dict:
@@ -373,22 +442,33 @@ class DocumentIndex:
             >>> results = await index.search("What is the revenue?", topk=3)
             >>> index.print_results("What is the revenue?", results)
         """
-        print(f"Searching for: '{query}'")
+        search_start = time.time()
+        logger.info(f"[INDEX-SEARCH] Starting search for: '{query}'")
+        logger.info(f"[INDEX-SEARCH] Top-k: {topk}")
 
         # Get query embeddings from Modal service
+        logger.info(f"[INDEX-SEARCH] Getting query embeddings from Modal service")
         result = await self._get_embeddings_from_modal(queries=[query])
-        
+
         if "query_embeddings" not in result or len(result["query_embeddings"]) == 0:
+            logger.error(f"[INDEX-SEARCH] No query embeddings returned from Modal service")
             raise ValueError("No query embeddings returned from Modal service")
-        
+
         # Get the first query's embeddings
         query_embedding = np.array(result["query_embeddings"][0], dtype=np.float32)
-        
-        print(f"Query embedding shape: {query_embedding.shape}")
-        print(f"Performing normalized MaxSim search (top-{topk})...")
+
+        logger.info(f"[INDEX-SEARCH] Query embedding shape: {query_embedding.shape}")
+        logger.info(f"[INDEX-SEARCH] Performing normalized MaxSim search (top-{topk})...")
 
         # Perform search using the retriever (run in thread pool to avoid blocking)
+        search_milvus_start = time.time()
         results = await asyncio.to_thread(self.retriever.search, query_embedding, topk=topk)
+        search_milvus_time = time.time() - search_milvus_start
+
+        search_total_time = time.time() - search_start
+        logger.info(f"[INDEX-SEARCH] Milvus search completed in {search_milvus_time:.3f}s")
+        logger.info(f"[INDEX-SEARCH] Total search time: {search_total_time:.3f}s")
+        logger.info(f"[INDEX-SEARCH] Found {len(results)} results")
 
         return results
 
