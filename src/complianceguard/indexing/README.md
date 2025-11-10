@@ -10,6 +10,8 @@ This module provides a unified `DocumentIndex` class for indexing PDF documents 
 - **Milvus Vector DB**: Local vector database for fast retrieval
 - **MaxSim Scoring**: Normalized Maximum Similarity scoring for accurate document ranking
 - **Multiple Indexes**: Support for multiple independent vector indexes
+- **Duplicate Prevention**: Automatic tracking to prevent re-indexing the same documents
+- **Index Tracking**: Persistent log of indexed documents with collection tracking
 - **Batch Operations**: Efficient batch processing and batch search
 - **Built-in Result Formatting**: Pretty print search results
 
@@ -120,6 +122,129 @@ print(f"Total pages: {stats['total_documents']}")
 index.clear_index()
 ```
 
+## Duplicate Prevention & Tracking
+
+The indexing system automatically tracks which documents have been indexed to prevent duplicates. This is handled by the `IndexTracker` component.
+
+### How It Works
+
+1. **Automatic Tracking**: When you index a document, it's automatically recorded in a tracker log
+2. **Collection-Specific**: Documents are tracked per collection, so the same document can be in multiple collections
+3. **File Hash-Based**: Uses SHA-256 file hashing to detect identical documents even if renamed
+4. **Persistent Log**: Tracker data is stored in `artifacts/index_tracker.json`
+
+### Duplicate Prevention Example
+
+```python
+from complianceguard.indexing import DocumentIndex
+
+index = DocumentIndex(
+    index_name="my_docs",
+    milvus_uri="./artifacts/milvus.db"
+)
+
+# First time - will index the document
+num_pages = index.index_document("report.pdf")
+print(f"Indexed {num_pages} pages")  # Output: Indexed 10 pages
+
+# Second time - will skip (already indexed)
+num_pages = index.index_document("report.pdf")
+print(f"Indexed {num_pages} pages")  # Output: Indexed 0 pages
+# Console will show: "⏭️  Document already indexed in collection 'my_docs'"
+
+# Force re-indexing if needed
+num_pages = index.index_document("report.pdf", force=True)
+print(f"Indexed {num_pages} pages")  # Output: Indexed 10 pages (re-indexed)
+```
+
+### Tracker Statistics
+
+```python
+# View tracker statistics
+index.print_tracker_stats()
+
+# Or get programmatic access
+stats = index.get_tracker_stats()
+print(f"Total documents tracked: {stats['total_documents']}")
+print(f"Total collections: {stats['total_collections']}")
+
+# View documents in a specific collection
+for coll_name, coll_data in stats['collections'].items():
+    print(f"\n{coll_name}:")
+    print(f"  Documents: {coll_data['document_count']}")
+    print(f"  Total pages: {coll_data['total_pages']}")
+```
+
+### Multiple Collections
+
+The tracker prevents duplicates within each collection separately:
+
+```python
+# Create two different indexes
+index1 = DocumentIndex(index_name="collection_1")
+index2 = DocumentIndex(index_name="collection_2")
+
+# Index into collection_1
+index1.index_document("report.pdf")  # ✓ Indexed
+
+# Index into collection_2 (allowed - different collection)
+index2.index_document("report.pdf")  # ✓ Indexed
+
+# Try again in collection_1 (prevented)
+index1.index_document("report.pdf")  # ⏭️ Skipped
+```
+
+### Batch Indexing with Tracking
+
+```python
+pdf_files = ["doc1.pdf", "doc2.pdf", "doc3.pdf"]
+
+# First run - indexes all new documents
+stats = index.index_documents(pdf_files)
+print(f"Indexed: {stats['documents_indexed']}")  # Output: 3
+print(f"Skipped: {stats['documents_skipped']}")  # Output: 0
+
+# Second run - skips all (already indexed)
+stats = index.index_documents(pdf_files)
+print(f"Indexed: {stats['documents_indexed']}")  # Output: 0
+print(f"Skipped: {stats['documents_skipped']}")  # Output: 3
+```
+
+### Clearing the Tracker
+
+When you clear an index, the tracker is also cleared:
+
+```python
+# Clear both the index and tracker entries
+index.clear_index()
+```
+
+### Direct Tracker Access
+
+For advanced use cases, you can access the tracker directly:
+
+```python
+from complianceguard.indexing import IndexTracker
+
+# Create tracker instance
+tracker = IndexTracker(tracker_file="./artifacts/index_tracker.json")
+
+# Check if a document is indexed
+is_indexed = tracker.is_indexed("report.pdf", "my_collection")
+
+# Get indexing info
+info = tracker.get_indexed_info("report.pdf", "my_collection")
+if info:
+    print(f"Indexed at: {info['indexed_at']}")
+    print(f"Pages: {info['num_pages']}")
+
+# Remove a specific entry
+tracker.remove_entry("report.pdf", "my_collection")
+
+# Clear all entries for a collection
+tracker.clear_collection("my_collection")
+```
+
 ## API Reference
 
 ### DocumentIndex Class
@@ -132,7 +257,8 @@ The `DocumentIndex` class provides all functionality for indexing and searching 
 DocumentIndex(
     index_name: str,
     milvus_uri: str = "./artifacts/milvus.db",
-    dim: int = 128
+    dim: int = 128,
+    tracker_file: str = "./artifacts/index_tracker.json"
 )
 ```
 
@@ -140,28 +266,35 @@ DocumentIndex(
 - `index_name`: Name of the vector index (Milvus collection)
 - `milvus_uri`: Path to Milvus database file or remote URI
 - `dim`: Dimensionality of ColPali embeddings (default: 128)
+- `tracker_file`: Path to the index tracker JSON file (default: "./artifacts/index_tracker.json")
 
 #### Indexing Methods
 
-##### `index_document(pdf_path: str, batch_size: int = 4) -> int`
+##### `index_document(pdf_path: str, batch_size: int = 4, force: bool = False) -> int`
 
-Index a single PDF document.
+Index a single PDF document. Automatically checks if document is already indexed and skips if found.
 
 **Parameters:**
 - `pdf_path`: Path to the PDF file
 - `batch_size`: Number of images to process per batch (default: 4)
+- `force`: Force re-indexing even if document is already indexed (default: False)
 
-**Returns:** Number of pages indexed
+**Returns:** Number of pages indexed (0 if skipped due to duplicate)
 
-##### `index_documents(pdf_paths: list[str], batch_size: int = 4) -> dict`
+##### `index_documents(pdf_paths: list[str], batch_size: int = 4, force: bool = False) -> dict`
 
-Index multiple PDF documents.
+Index multiple PDF documents. Automatically skips documents that are already indexed.
 
 **Parameters:**
 - `pdf_paths`: List of PDF file paths
 - `batch_size`: Number of images to process per batch (default: 4)
+- `force`: Force re-indexing even if documents are already indexed (default: False)
 
-**Returns:** Dictionary with indexing statistics
+**Returns:** Dictionary with indexing statistics including:
+- `total_documents`: Total number of documents processed
+- `documents_indexed`: Number of documents newly indexed
+- `documents_skipped`: Number of documents skipped (already indexed)
+- `total_pages`: Total pages indexed
 
 #### Search Methods
 
@@ -198,13 +331,31 @@ Pretty print search results.
 
 ##### `get_stats() -> dict`
 
-Get statistics about the indexed documents.
+Get statistics about the indexed documents, including tracker information.
 
-**Returns:** Dictionary with index statistics
+**Returns:** Dictionary with index statistics including:
+- `index_name`: Name of the collection
+- `total_documents`: Number of documents in the index
+- `documents`: List of indexed documents
+- `tracked_documents`: Number of documents tracked
+- `tracker_info`: Detailed tracker information
 
 ##### `clear_index() -> None`
 
-Clear all documents from the index.
+Clear all documents from the index and remove tracker entries for this collection.
+
+##### `get_tracker_stats() -> dict`
+
+Get statistics from the index tracker across all collections.
+
+**Returns:** Dictionary with tracker statistics including:
+- `total_documents`: Total documents tracked across all collections
+- `total_collections`: Number of collections with tracked documents
+- `collections`: Detailed information per collection
+
+##### `print_tracker_stats() -> None`
+
+Print a formatted display of tracker statistics.
 
 ## Command-Line Usage
 
@@ -353,6 +504,60 @@ contracts_index.index_document("documents/contracts/agreement.pdf")
 results = reports_index.search("revenue growth", topk=3)
 reports_index.print_results("revenue growth", results)
 ```
+
+## Search Scripts and Examples
+
+### Interactive Search Script
+
+After indexing documents, you can use the standalone `search_example.py` script for quick searches:
+
+**Interactive Mode** (default):
+```bash
+python src/complianceguard/indexing/search_example.py
+```
+
+This starts an interactive search session where you can type queries and see results immediately. Type `quit` or press Ctrl+C to exit.
+
+**Single Query Mode**:
+```bash
+# Basic single query
+python src/complianceguard/indexing/search_example.py --query "What is machine learning?"
+
+# Search in a specific index
+python src/complianceguard/indexing/search_example.py --index-name my_documents --query "API documentation"
+
+# Get more results
+python src/complianceguard/indexing/search_example.py --query "neural networks" --topk 10
+```
+
+**Options**:
+- `--query`: Single search query (if not provided, enters interactive mode)
+- `--index-name`: Name of the index to search (default: `example_docs`)
+- `--milvus-uri`: Path to Milvus database (default: `./artifacts/milvus_example.db`)
+- `--topk`: Number of results to return (default: 5)
+
+### Example Usage Script
+
+The `example_usage.py` script provides comprehensive examples:
+
+```bash
+# Run all examples (indexes and searches)
+python -c "from complianceguard.indexing.example_usage import main; main()"
+
+# Run individual examples
+python -c "from complianceguard.indexing.example_usage import example_basic_usage; example_basic_usage()"
+
+# Search existing index without re-indexing
+python -c "from complianceguard.indexing.example_usage import example_search_existing_index; example_search_existing_index()"
+```
+
+Available examples in `example_usage.py`:
+1. **example_basic_usage()** - Index and search a single document
+2. **example_multiple_documents()** - Index multiple documents
+3. **example_multiple_indexes()** - Create separate indexes for different document types
+4. **example_index_management()** - View index statistics and manage indexes
+5. **example_batch_search()** - Efficient batch searching with multiple queries
+6. **example_search_existing_index()** - Search already-indexed documents with various query types
 
 ## License
 

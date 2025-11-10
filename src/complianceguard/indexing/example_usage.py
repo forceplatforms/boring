@@ -5,6 +5,11 @@ This script demonstrates:
 2. Indexing a PDF document
 3. Searching the indexed documents
 4. Managing multiple indexes
+5. Searching existing indexes without re-indexing
+
+To run individual examples:
+- python -c "from complianceguard.indexing.example_usage import example_basic_usage; example_basic_usage()"
+- python -c "from complianceguard.indexing.example_usage import example_search_existing_index; example_search_existing_index()"
 """
 
 from complianceguard.indexing import DocumentIndex
@@ -32,7 +37,7 @@ def example_basic_usage():
         print(f"Successfully indexed {num_pages} pages")
 
         # Search the document
-        query = "What is this document about?"
+        query = "What was the average accuracy of Qwen2.5-VL-7B with MoLoRAG+"
         results = index.search(query, topk=3)
 
         # Print results using built-in method
@@ -65,7 +70,7 @@ def example_multiple_documents():
 
     try:
         stats = index.index_documents(pdf_files, batch_size=4)
-        print(f"\nIndexing complete!")
+        print("\nIndexing complete!")
         print(f"Total documents: {stats['total_documents']}")
         print(f"Total pages: {stats['total_pages']}")
 
@@ -91,7 +96,9 @@ def example_multiple_indexes():
         milvus_uri="./artifacts/milvus_example.db"
     )
 
-    print("\nCreated two separate indexes: 'finance_documents' and 'legal_documents'")
+    print("\nCreated two separate indexes:")
+    print(f"  - {finance_index.index_name}: {finance_index.get_stats()['total_documents']} documents")
+    print(f"  - {legal_index.index_name}: {legal_index.get_stats()['total_documents']} documents")
 
     # You can now index different documents to different indexes
     # finance_index.index_document("financial_report.pdf")
@@ -156,13 +163,102 @@ def example_batch_search():
     all_results = index.batch_search(queries, topk=3)
 
     # Print results for each query
-    for i, (query, results) in enumerate(zip(queries, all_results), 1):
+    for i, (query, results) in enumerate(zip(queries, all_results, strict=True), 1):
         print(f"\n{i}. Query: '{query}'")
         if results:
-            for rank, (score, _, filepath) in enumerate(results, 1):
+            for rank, (score, _page, filepath) in enumerate(results, 1):
                 print(f"   {rank}. {filepath} (score: {score:.4f})")
         else:
             print("   No results found")
+
+
+def example_search_existing_index():
+    """Example: Search an already-indexed collection without re-indexing.
+
+    This is useful when you've already indexed documents and just want to
+    run searches without having to index again.
+    """
+    print("\n" + "=" * 80)
+    print("Example 6: Search Existing Index")
+    print("=" * 80)
+
+    # Connect to existing index
+    index = DocumentIndex(
+        index_name="example_docs",  # Use the same name as your indexed collection
+        milvus_uri="./artifacts/milvus_example.db"
+    )
+
+    # Check if index has data
+    stats = index.get_stats()
+    print(f"\nConnected to index: {stats['index_name']}")
+    print(f"Total documents: {stats['total_documents']}")
+
+    if stats['total_documents'] == 0:
+        print("\nNo documents found in index. Please run indexing first.")
+        print("You can run: example_basic_usage() to index a document first.")
+        return
+
+    print("\nIndexed documents:")
+    for doc in stats['documents']:
+        print(f"  - {doc['filepath']}")
+
+    # Example searches
+    print("\n" + "-" * 80)
+    print("Running example searches...")
+    print("-" * 80)
+
+    # Search 1: Specific technical question
+    query1 = "What was the average accuracy of Qwen2.5-VL-7B with MoLoRAG+"
+    print(f"\n1. Searching: '{query1}'")
+    results1 = index.search(query1, topk=3)
+
+    if results1:
+        print(f"   Found {len(results1)} results:")
+        for rank, (score, page_num, filepath) in enumerate(results1, 1):
+            print(f"   {rank}. Page {page_num} - Score: {score:.4f}")
+            print(f"      File: {filepath}")
+    else:
+        print("   No results found")
+
+    # Search 2: Broader topic
+    query2 = "mixture of experts"
+    print(f"\n2. Searching: '{query2}'")
+    results2 = index.search(query2, topk=5)
+
+    if results2:
+        print(f"   Found {len(results2)} results:")
+        for rank, (score, page_num, _filepath) in enumerate(results2, 1):
+            print(f"   {rank}. Page {page_num} - Score: {score:.4f}")
+    else:
+        print("   No results found")
+
+    # Search 3: Using print_results for better formatting
+    query3 = "retrieval augmented generation"
+    print(f"\n3. Searching with formatted output: '{query3}'")
+    results3 = index.search(query3, topk=3)
+    index.print_results(query3, results3)
+
+    # Search 4: Batch search example
+    print("\n4. Running batch search...")
+    batch_queries = [
+        "What is the main contribution?",
+        "How does the training work?",
+        "What are the benchmarks used?",
+    ]
+
+    batch_results = index.batch_search(batch_queries, topk=2)
+
+    for query, results in zip(batch_queries, batch_results, strict=True):
+        print(f"\n   Query: '{query}'")
+        if results:
+            for rank, (score, page_num, _filepath) in enumerate(results, 1):
+                print(f"     {rank}. Page {page_num} (score: {score:.4f})")
+        else:
+            print("     No results")
+
+    print("\n" + "-" * 80)
+    print("Search examples complete!")
+    print("-" * 80)
 
 
 def main():
@@ -175,13 +271,21 @@ def main():
 
     # Run examples
     example_basic_usage()
+
+    # Uncomment to run other examples:
     # example_multiple_documents()
     # example_multiple_indexes()
     # example_index_management()
     # example_batch_search()
 
+    # Search existing index (run this after indexing is complete)
+    # example_search_existing_index()
+
     print("\n" + "=" * 80)
     print("Examples complete!")
+    print("=" * 80)
+    print("\nTo search your indexed documents, run:")
+    print("  python -c 'from complianceguard.indexing.example_usage import example_search_existing_index; example_search_existing_index()'")
     print("=" * 80)
 
 

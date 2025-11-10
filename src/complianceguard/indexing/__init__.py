@@ -11,11 +11,13 @@ Example:
     >>> index.print_results("What is the revenue?", results)
 """
 
+from complianceguard.indexing.index_tracker import IndexTracker
 from complianceguard.indexing.milvus_index import DocumentIndex
 from complianceguard.indexing.milvus_retriever import MilvusRetriever
 
 __all__ = [
     "DocumentIndex",
+    "IndexTracker",
     "MilvusRetriever",
 ]
 

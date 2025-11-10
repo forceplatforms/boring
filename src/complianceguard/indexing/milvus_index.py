@@ -15,6 +15,7 @@ from PIL import Image
 from pymilvus import MilvusClient
 from tqdm import tqdm
 
+from complianceguard.indexing.index_tracker import IndexTracker
 from complianceguard.indexing.milvus_retriever import MilvusRetriever
 
 
@@ -43,7 +44,8 @@ class DocumentIndex:
         self,
         index_name: str,
         milvus_uri: str = "./artifacts/milvus.db",
-        dim: int = 128
+        dim: int = 128,
+        tracker_file: str = "./artifacts/index_tracker.json"
     ):
         """Initialize the document index.
 
@@ -51,6 +53,7 @@ class DocumentIndex:
             index_name: Name of the vector index (Milvus collection) to use
             milvus_uri: URI for Milvus connection (default: "./artifacts/milvus.db")
             dim: Dimensionality of ColPali embeddings (default: 128)
+            tracker_file: Path to the index tracker file (default: "./artifacts/index_tracker.json")
         """
         self.index_name = index_name
         self.milvus_uri = milvus_uri
@@ -71,6 +74,9 @@ class DocumentIndex:
             collection_name=index_name,
             dim=dim
         )
+        
+        # Initialize index tracker
+        self.tracker = IndexTracker(tracker_file=tracker_file)
         
         # Create collection and indexes if they don't exist
         self._ensure_collection_exists()
@@ -176,19 +182,30 @@ class DocumentIndex:
             print(f"Error converting PDF: {e}")
             raise
     
-    def index_document(self, pdf_path: str, batch_size: int = 4) -> int:
+    def index_document(self, pdf_path: str, batch_size: int = 4, force: bool = False) -> int:
         """Index a single PDF document.
         
         Args:
             pdf_path: Path to the PDF file
             batch_size: Number of images to process in each batch (default: 4)
+            force: Force re-indexing even if document is already indexed (default: False)
             
         Returns:
-            Number of pages indexed
+            Number of pages indexed (0 if skipped)
         """
         print(f"\n{'='*60}")
         print(f"Indexing document: {pdf_path}")
         print(f"{'='*60}")
+        
+        # Check if document is already indexed
+        if not force and self.tracker.is_indexed(pdf_path, self.index_name):
+            indexed_info = self.tracker.get_indexed_info(pdf_path, self.index_name)
+            print(f"⏭️  Document already indexed in collection '{self.index_name}'")
+            print(f"   Indexed at: {indexed_info['indexed_at']}")
+            print(f"   Pages: {indexed_info['num_pages']}")
+            print("   Skipping to avoid duplicates...")
+            print("   (Use force=True to re-index)")
+            return 0
         
         # Convert PDF to images
         images = self._pdf_to_images(pdf_path)
@@ -224,38 +241,59 @@ class DocumentIndex:
                 
                 self.retriever.insert(data)
         
-        print(f"Successfully indexed {num_pages} pages from {pdf_path}")
+        print(f"✓ Successfully indexed {num_pages} pages from {pdf_path}")
+        
+        # Record in tracker
+        self.tracker.record_indexing(
+            filepath=pdf_path,
+            collection_name=self.index_name,
+            num_pages=num_pages,
+            metadata={
+                "batch_size": batch_size,
+                "milvus_uri": self.milvus_uri
+            }
+        )
         
         # Ensure collection is loaded for searching
         self.client.load_collection(collection_name=self.index_name)
         
         return num_pages
     
-    def index_documents(self, pdf_paths: list[str], batch_size: int = 4) -> dict:
+    def index_documents(self, pdf_paths: list[str], batch_size: int = 4, force: bool = False) -> dict:
         """Index multiple PDF documents.
         
         Args:
             pdf_paths: List of paths to PDF files
             batch_size: Number of images to process in each batch (default: 4)
+            force: Force re-indexing even if documents are already indexed (default: False)
             
         Returns:
             Dictionary with indexing statistics
         """
         total_pages = 0
         total_docs = len(pdf_paths)
+        docs_indexed = 0
+        docs_skipped = 0
         
         for pdf_path in pdf_paths:
-            num_pages = self.index_document(pdf_path, batch_size=batch_size)
-            total_pages += num_pages
+            num_pages = self.index_document(pdf_path, batch_size=batch_size, force=force)
+            if num_pages > 0:
+                docs_indexed += 1
+                total_pages += num_pages
+            else:
+                docs_skipped += 1
         
         print(f"\n{'='*60}")
         print("Indexing complete!")
         print(f"Total documents processed: {total_docs}")
-        print(f"Total pages indexed: {total_pages}")
+        print(f"  - Newly indexed: {docs_indexed} ({total_pages} pages)")
+        print(f"  - Skipped (already indexed): {docs_skipped}")
         print(f"{'='*60}\n")
         
         return {
             "total_documents": total_docs,
+            "documents_indexed": docs_indexed,
+            "documents_skipped": docs_skipped,
             "total_pages": total_pages
         }
     
@@ -361,13 +399,18 @@ class DocumentIndex:
     def clear_index(self) -> None:
         """Clear all documents from the index.
         
-        This drops the entire collection. A new collection will be created
-        automatically on the next indexing operation.
+        This drops the entire collection and clears tracker entries.
+        A new collection will be created automatically on the next indexing operation.
         """
         if self.client.has_collection(self.index_name):
             print(f"Dropping collection: {self.index_name}")
             self.client.drop_collection(collection_name=self.index_name)
             print(f"Collection '{self.index_name}' cleared")
+            
+            # Clear tracker entries for this collection
+            removed_count = self.tracker.clear_collection(self.index_name)
+            print(f"Cleared {removed_count} tracker entries for collection '{self.index_name}'")
+            
             # Recreate empty collection
             self._ensure_collection_exists()
         else:
@@ -377,15 +420,30 @@ class DocumentIndex:
         """Get statistics about the indexed documents.
         
         Returns:
-            Dictionary with index statistics
+            Dictionary with index statistics including tracker information
         """
         all_docs = self.retriever.get_all_doc_ids()
+        tracked_docs = self.tracker.get_all_indexed(collection_name=self.index_name)
         
         return {
             "index_name": self.index_name,
             "total_documents": len(all_docs),
-            "documents": [{"doc_id": doc_id, "filepath": filepath} for doc_id, filepath in all_docs]
+            "documents": [{"doc_id": doc_id, "filepath": filepath} for doc_id, filepath in all_docs],
+            "tracked_documents": len(tracked_docs),
+            "tracker_info": tracked_docs
         }
+    
+    def get_tracker_stats(self) -> dict:
+        """Get statistics from the index tracker.
+        
+        Returns:
+            Dictionary with tracker statistics
+        """
+        return self.tracker.get_stats()
+    
+    def print_tracker_stats(self) -> None:
+        """Print statistics from the index tracker."""
+        self.tracker.print_stats()
 
 
 if __name__ == "__main__":
