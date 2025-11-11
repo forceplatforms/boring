@@ -2231,11 +2231,82 @@ function useDeleteFramework() {
 "use strict";
 
 __turbopack_context__.s([
+    "UPLOAD_CONSTRAINTS",
+    ()=>UPLOAD_CONSTRAINTS,
     "documentsApi",
-    ()=>documentsApi
+    ()=>documentsApi,
+    "validateFiles",
+    ()=>validateFiles
 ]);
 var __TURBOPACK__imported__module__$5b$project$5d2f$lib$2f$api$2f$client$2e$ts__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/lib/api/client.ts [app-ssr] (ecmascript)");
 ;
+const UPLOAD_CONSTRAINTS = {
+    MAX_FILE_SIZE: 100 * 1024 * 1024,
+    MAX_TOTAL_SIZE: 500 * 1024 * 1024,
+    MAX_FILE_COUNT: 20,
+    ALLOWED_TYPES: [
+        "application/pdf"
+    ],
+    ALLOWED_EXTENSIONS: [
+        ".pdf"
+    ]
+};
+function validateFiles(files) {
+    const errors = [];
+    // Check file count
+    if (files.length === 0) {
+        errors.push({
+            file: "general",
+            error: "No files selected"
+        });
+        return {
+            valid: false,
+            errors
+        };
+    }
+    if (files.length > UPLOAD_CONSTRAINTS.MAX_FILE_COUNT) {
+        errors.push({
+            file: "general",
+            error: `Maximum ${UPLOAD_CONSTRAINTS.MAX_FILE_COUNT} files allowed`
+        });
+    }
+    // Check total size
+    const totalSize = files.reduce((sum, file)=>sum + file.size, 0);
+    if (totalSize > UPLOAD_CONSTRAINTS.MAX_TOTAL_SIZE) {
+        errors.push({
+            file: "general",
+            error: `Total size exceeds ${Math.round(UPLOAD_CONSTRAINTS.MAX_TOTAL_SIZE / 1024 / 1024)}MB limit`
+        });
+    }
+    // Check individual files
+    files.forEach((file)=>{
+        // Check file type
+        if (!UPLOAD_CONSTRAINTS.ALLOWED_TYPES.includes(file.type)) {
+            errors.push({
+                file: file.name,
+                error: "Only PDF files are allowed"
+            });
+        }
+        // Check file size
+        if (file.size > UPLOAD_CONSTRAINTS.MAX_FILE_SIZE) {
+            errors.push({
+                file: file.name,
+                error: `File exceeds ${Math.round(UPLOAD_CONSTRAINTS.MAX_FILE_SIZE / 1024 / 1024)}MB limit`
+            });
+        }
+        // Check if file is empty
+        if (file.size === 0) {
+            errors.push({
+                file: file.name,
+                error: "File is empty"
+            });
+        }
+    });
+    return {
+        valid: errors.length === 0,
+        errors
+    };
+}
 const documentsApi = {
     // List documents with pagination and filters
     list: async (params)=>{
@@ -2249,15 +2320,31 @@ const documentsApi = {
         const { data } = await __TURBOPACK__imported__module__$5b$project$5d2f$lib$2f$api$2f$client$2e$ts__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["default"].get(`/ingest/${id}`);
         return data;
     },
-    // Upload/ingest documents
-    ingest: async (files, indexName)=>{
+    // Upload/ingest documents with progress tracking
+    ingest: async (files, indexName, options)=>{
+        // Validate files first
+        const validation = validateFiles(files);
+        if (!validation.valid) {
+            throw new Error(validation.errors.map((e)=>e.error).join(", "));
+        }
         const formData = new FormData();
         files.forEach((file)=>{
             formData.append("files", file);
         });
         formData.append("index_name", indexName);
         const client = (0, __TURBOPACK__imported__module__$5b$project$5d2f$lib$2f$api$2f$client$2e$ts__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["createFormDataClient"])();
-        const { data } = await client.post("/ingest", formData);
+        const { data } = await client.post("/ingest", formData, {
+            signal: options?.signal,
+            onUploadProgress: options?.onProgress ? (progressEvent)=>{
+                if (progressEvent.total) {
+                    options.onProgress?.({
+                        loaded: progressEvent.loaded,
+                        total: progressEvent.total,
+                        percentage: Math.round(progressEvent.loaded / progressEvent.total * 100)
+                    });
+                }
+            } : undefined
+        });
         return data;
     },
     // Update document metadata
@@ -2367,7 +2454,10 @@ function useUniqueIndexes() {
 function useIngestDocuments() {
     const queryClient = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f40$tanstack$2f$react$2d$query$2f$build$2f$modern$2f$QueryClientProvider$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["useQueryClient"])();
     return (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f40$tanstack$2f$react$2d$query$2f$build$2f$modern$2f$useMutation$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["useMutation"])({
-        mutationFn: ({ files, indexName })=>__TURBOPACK__imported__module__$5b$project$5d2f$lib$2f$api$2f$documents$2e$ts__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["documentsApi"].ingest(files, indexName),
+        mutationFn: ({ files, indexName, onProgress, signal })=>__TURBOPACK__imported__module__$5b$project$5d2f$lib$2f$api$2f$documents$2e$ts__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["documentsApi"].ingest(files, indexName, {
+                onProgress,
+                signal
+            }),
         onSuccess: ()=>{
             // Invalidate documents list and stats
             queryClient.invalidateQueries({
@@ -2376,7 +2466,8 @@ function useIngestDocuments() {
             queryClient.invalidateQueries({
                 queryKey: documentKeys.stats()
             });
-        }
+        },
+        retry: false
     });
 }
 function useUpdateDocument() {

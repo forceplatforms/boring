@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Upload, RefreshCw, AlertCircle } from "lucide-react";
+import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { UploadDialog } from "@/components/documents/upload-dialog";
@@ -12,6 +13,7 @@ import {
   useIngestDocuments,
   useDeleteDocument,
 } from "@/lib/hooks/use-documents";
+import type { UploadProgress } from "@/lib/api/documents";
 
 export default function DocumentsPage() {
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
@@ -24,20 +26,47 @@ export default function DocumentsPage() {
   const ingestMutation = useIngestDocuments();
   const deleteMutation = useDeleteDocument();
 
-  const handleUpload = async (files: File[], indexName: string) => {
+  const handleUpload = async (
+    files: File[],
+    indexName: string,
+    options: {
+      onProgress: (progress: UploadProgress) => void;
+      signal: AbortSignal;
+    }
+  ) => {
     try {
-      await ingestMutation.mutateAsync({ files, indexName });
+      await ingestMutation.mutateAsync({
+        files,
+        indexName,
+        onProgress: options.onProgress,
+        signal: options.signal,
+      });
+
       setUploadDialogOpen(false);
-    } catch (error) {
-      console.error("Upload failed:", error);
+      toast.success("Upload successful!", {
+        description: `${files.length} file(s) uploaded and indexed successfully`,
+      });
+    } catch (error: any) {
+      // Only show error if not cancelled
+      if (error.name !== "AbortError" && error.name !== "CanceledError") {
+        console.error("Upload failed:", error);
+        toast.error("Upload failed", {
+          description: error.message || "An error occurred during upload",
+        });
+      }
+      throw error; // Re-throw so dialog can handle it
     }
   };
 
   const handleDelete = async (id: string) => {
     try {
       await deleteMutation.mutateAsync(id);
-    } catch (error) {
+      toast.success("Document deleted successfully");
+    } catch (error: any) {
       console.error("Delete failed:", error);
+      toast.error("Delete failed", {
+        description: error.message || "An error occurred while deleting",
+      });
     }
   };
 

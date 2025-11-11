@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Plus, RefreshCw, Shield } from "lucide-react";
+import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { CreateFrameworkDialog } from "@/components/frameworks/create-framework-dialog";
@@ -14,6 +15,7 @@ import {
 } from "@/lib/hooks/use-frameworks";
 import { useIngestDocuments } from "@/lib/hooks/use-documents";
 import type { ComplianceFramework } from "@/lib/types/api";
+import type { UploadProgress } from "@/lib/api/documents";
 
 export default function FrameworksPage() {
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -44,16 +46,24 @@ export default function FrameworksPage() {
         compliance_todos: data.todos,
       });
       setCreateDialogOpen(false);
-    } catch (error) {
+      toast.success("Framework created successfully!");
+    } catch (error: any) {
       console.error("Create failed:", error);
+      toast.error("Failed to create framework", {
+        description: error.message || "An error occurred",
+      });
     }
   };
 
   const handleDelete = async (id: string) => {
     try {
       await deleteMutation.mutateAsync(id);
-    } catch (error) {
+      toast.success("Framework deleted successfully");
+    } catch (error: any) {
       console.error("Delete failed:", error);
+      toast.error("Failed to delete framework", {
+        description: error.message || "An error occurred",
+      });
     }
   };
 
@@ -62,13 +72,35 @@ export default function FrameworksPage() {
     setUploadDialogOpen(true);
   };
 
-  const handleUpload = async (files: File[], indexName: string) => {
+  const handleUpload = async (
+    files: File[],
+    indexName: string,
+    options: {
+      onProgress: (progress: UploadProgress) => void;
+      signal: AbortSignal;
+    }
+  ) => {
     try {
-      await ingestMutation.mutateAsync({ files, indexName });
+      await ingestMutation.mutateAsync({
+        files,
+        indexName,
+        onProgress: options.onProgress,
+        signal: options.signal,
+      });
       setUploadDialogOpen(false);
       setSelectedFramework(null);
-    } catch (error) {
-      console.error("Upload failed:", error);
+      toast.success("Documents uploaded successfully!", {
+        description: `${files.length} document(s) uploaded to ${selectedFramework?.name || indexName}`,
+      });
+    } catch (error: any) {
+      // Only show error if not cancelled
+      if (error.name !== "AbortError" && error.name !== "CanceledError") {
+        console.error("Upload failed:", error);
+        toast.error("Upload failed", {
+          description: error.message || "An error occurred during upload",
+        });
+      }
+      throw error; // Re-throw so dialog can handle it
     }
   };
 

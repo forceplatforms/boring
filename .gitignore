@@ -252,3 +252,6 @@ pyvenv.cfg
 
 # Ruff
 .ruff_cache/
+
+
+.next/*
