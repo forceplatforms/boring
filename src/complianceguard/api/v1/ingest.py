@@ -14,6 +14,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     UploadFile,
     status,
 )
@@ -28,7 +29,10 @@ from complianceguard.schemas.ingested_document import (
     BatchIngestResponse,
     BatchIngestResult,
     IngestDocumentResponse,
+    IngestedDocumentSummary,
+    IngestedDocumentStatsResponse,
 )
+from complianceguard.schemas.base import PaginatedResponse
 from complianceguard.utils.file_storage import (
     calculate_file_hash,
     upload_file_to_s3,
@@ -42,7 +46,7 @@ def _validate_and_sanitize_index_name(index_name: str) -> str:
     """Validate and sanitize Milvus collection name.
 
     Milvus collection naming rules:
-    - Only alphanumeric, underscore, hyphen allowed
+    - Only alphanumeric and underscore allowed (hyphens NOT allowed)
     - Length: 1-255 characters (we enforce 3-64 for sanity)
     - Must start with letter or underscore
     - Case-sensitive but we normalize to lowercase
@@ -65,8 +69,8 @@ def _validate_and_sanitize_index_name(index_name: str) -> str:
     # Remove leading/trailing whitespace
     sanitized = index_name.strip()
 
-    # Replace invalid characters with underscore
-    sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', sanitized)
+    # Replace invalid characters (including hyphens) with underscore
+    sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', sanitized)
 
     # Convert to lowercase for consistency
     sanitized = sanitized.lower()
@@ -525,3 +529,122 @@ async def batch_ingest_documents(
         duplicates=duplicates,
         results=results,
     )
+
+
+def _ingested_doc_to_summary(doc: IngestedDocument) -> IngestedDocumentSummary:
+    """Convert IngestedDocument model to IngestedDocumentSummary."""
+    return IngestedDocumentSummary(
+        id=doc.id,
+        filename=doc.filename,
+        doc_type=doc.doc_type,
+        doc_category=doc.doc_category,
+        file_size=doc.file_size,
+        file_size_mb=doc.file_size_mb,
+        indexing_status=doc.indexing_status,
+        index_name=doc.index_name,
+        num_pages=doc.num_pages,
+        indexed_at=doc.indexed_at,
+        metadata=doc.doc_metadata or {},
+        created_at=doc.created_at,
+        updated_at=doc.updated_at,
+    )
+
+
+@router.get(
+    "",
+    response_model=PaginatedResponse[IngestedDocumentSummary],
+    summary="List Ingested Documents",
+    description="Get paginated list of ingested documents with optional filters",
+)
+async def list_ingested_documents(
+    limit: int = Query(20, ge=1, le=100, description="Items per page"),
+    offset: int = Query(0, ge=0, description="Number of items to skip"),
+    doc_type: Optional[str] = Query(None, description="Filter by document type"),
+    doc_category: Optional[str] = Query(None, description="Filter by document category"),
+    indexing_status: Optional[str] = Query(None, description="Filter by indexing status"),
+    index_name: Optional[str] = Query(None, description="Filter by Milvus collection name"),
+    db: AsyncSession = Depends(get_async_db),
+):
+    """
+    Retrieve a paginated list of ingested documents.
+
+    **Filters:**
+    - doc_type: Document type classification
+    - doc_category: Document category
+    - indexing_status: pending, processing, completed, failed
+    - index_name: Milvus collection name
+
+    **Pagination:**
+    - limit: maximum items per page (1-100)
+    - offset: number of items to skip
+    """
+    documents, total = await ingested_doc_crud.list_ingested_documents(
+        db=db,
+        skip=offset,
+        limit=limit,
+        doc_type=doc_type,
+        doc_category=doc_category,
+        indexing_status=indexing_status,
+        index_name=index_name,
+    )
+
+    return PaginatedResponse(
+        items=[_ingested_doc_to_summary(doc) for doc in documents],
+        total=total,
+        limit=limit,
+        offset=offset,
+        has_more=(offset + limit) < total,
+    )
+
+
+@router.get(
+    "/stats",
+    response_model=IngestedDocumentStatsResponse,
+    summary="Ingested Document Statistics",
+    description="Get aggregated statistics for ingested documents",
+)
+async def get_ingested_document_stats(
+    db: AsyncSession = Depends(get_async_db),
+):
+    """
+    Get aggregated statistics about all ingested documents.
+
+    Returns:
+    - Total document count
+    - Count by document type
+    - Count by indexing status
+    - Count by Milvus index
+    - Total storage used
+    """
+    stats = await ingested_doc_crud.get_ingested_document_stats(db)
+
+    return IngestedDocumentStatsResponse(
+        total=stats["total"],
+        by_type=stats["by_type"],
+        by_status=stats["by_status"],
+        by_index=stats["by_index"],
+        total_size_bytes=stats["total_size_bytes"],
+        total_size_mb=stats["total_size_mb"],
+    )
+
+
+@router.get(
+    "/indexes",
+    response_model=list[str],
+    summary="List Unique Index Names",
+    description="Get list of all unique Milvus collection/index names from ingested documents",
+)
+async def get_unique_indexes(
+    db: AsyncSession = Depends(get_async_db),
+):
+    """
+    Get list of all unique index names from ingested documents.
+
+    This endpoint returns all distinct Milvus collection names that have been used
+    for document indexing. Useful for populating dropdowns or validating index names.
+
+    Returns:
+        List of unique index names (sorted alphabetically)
+    """
+    index_names = await ingested_doc_crud.get_unique_index_names(db)
+    return index_names

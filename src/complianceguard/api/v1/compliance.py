@@ -21,8 +21,11 @@ class ComplianceCheckRequest(BaseModel):
     """Request to run compliance check."""
 
     framework_id: UUID = Field(..., description="UUID of the compliance framework to use")
-    document_ids: list[UUID] = Field(
-        ..., min_items=1, description="List of document UUIDs to check against framework"
+    document_ids: Optional[list[UUID]] = Field(
+        None, min_items=1, description="List of document UUIDs to check against framework"
+    )
+    document_index_name: Optional[str] = Field(
+        None, description="Milvus index/collection name to fetch documents from"
     )
     triggered_by_email: Optional[str] = Field(None, description="Email of user triggering the scan")
     triggered_by_name: Optional[str] = Field(None, description="Name of user triggering the scan")
@@ -144,11 +147,38 @@ async def run_compliance_check(
     Use the `/compliance/status/{scan_job_id}` endpoint to check progress.
     """
     try:
+        # Validate that either document_ids or document_index_name is provided
+        if not request.document_ids and not request.document_index_name:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Either document_ids or document_index_name must be provided",
+            )
+
+        # If document_index_name is provided, fetch all documents from that index
+        document_ids = request.document_ids
+        if request.document_index_name:
+            from complianceguard.crud import ingested_document as doc_crud
+            from sqlalchemy import select
+            from complianceguard.models import IngestedDocument
+
+            result = await db.execute(
+                select(IngestedDocument.id).where(
+                    IngestedDocument.index_name == request.document_index_name
+                )
+            )
+            document_ids = [row[0] for row in result.all()]
+
+            if not document_ids:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"No documents found in index '{request.document_index_name}'",
+                )
+
         # Run compliance analysis (this is async but returns immediately with a job ID)
         scan_job_id = await analyze_compliance(
             db=db,
             framework_id=request.framework_id,
-            document_ids=request.document_ids,
+            document_ids=document_ids,
             triggered_by_email=request.triggered_by_email,
             triggered_by_name=request.triggered_by_name,
         )
@@ -157,7 +187,7 @@ async def run_compliance_check(
             scan_job_id=scan_job_id,
             message="Compliance check started successfully",
             framework_id=request.framework_id,
-            document_count=len(request.document_ids),
+            document_count=len(document_ids),
         )
 
     except ValueError as e:
@@ -166,6 +196,9 @@ async def run_compliance_check(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
         # Other errors
         raise HTTPException(

@@ -312,3 +312,26 @@ async def get_ingested_document_stats(db: AsyncSession) -> dict:
         "total_size_bytes": total_size,
         "total_size_mb": round(total_size / (1024 * 1024), 2),
     }
+
+
+async def get_unique_index_names(db: AsyncSession) -> list[str]:
+    """
+    Get list of unique index names from ingested documents.
+
+    Args:
+        db: Database session
+
+    Returns:
+        List of unique index names (excluding None)
+    """
+    result = await db.execute(
+        select(IngestedDocument.index_name)
+        .distinct()
+        .where(IngestedDocument.index_name.is_not(None))
+        .order_by(IngestedDocument.index_name)
+    )
+    index_names = [row[0] for row in result.all()]
+
+    logger.info(f"Found {len(index_names)} unique index names")
+
+    return index_names

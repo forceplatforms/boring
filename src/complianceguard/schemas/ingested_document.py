@@ -239,6 +239,7 @@ class IngestedDocumentSummary(BaseSchema, TimestampMixin):
     file_size: int = Field(..., description="File size in bytes")
     file_size_mb: float = Field(..., description="File size in megabytes")
     indexing_status: str = Field(..., description="Indexing status")
+    index_name: Optional[str] = Field(None, description="Milvus collection name")
     num_pages: Optional[int] = Field(None, description="Number of pages")
     indexed_at: Optional[datetime] = Field(None, description="When document was indexed")
     metadata: dict = Field(default_factory=dict, description="Custom metadata")
