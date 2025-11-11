@@ -24,6 +24,8 @@ from complianceguard.models.violation import (
     ViolationSeverity,
     ViolationType,
     ViolationStatus,
+)
+from complianceguard.models.compliance_framework import (
     ComplianceFramework,
 )
 from complianceguard.models.scan_job import (

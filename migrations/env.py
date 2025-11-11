@@ -10,7 +10,15 @@ from complianceguard.database import Base
 from complianceguard.config import get_settings
 
 # Import all models to ensure they're registered with Base
-from complianceguard.models import Document, Violation, ScanJob
+from complianceguard.models import (
+    Document,
+    Violation,
+    ScanJob,
+    IngestedDocument,
+    ComplianceFramework,
+    DocumentChunk,
+    DocumentSplit,
+)
 
 # Alembic Config object
 config = context.config

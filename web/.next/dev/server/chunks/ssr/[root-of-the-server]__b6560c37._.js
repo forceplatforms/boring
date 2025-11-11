@@ -1617,9 +1617,7 @@ const __TURBOPACK__default__export__ = apiClient;
 const createFormDataClient = ()=>{
     return __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$axios$2f$lib$2f$axios$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["default"].create({
         baseURL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1",
-        headers: {
-            "Content-Type": "multipart/form-data"
-        },
+        // Don't set Content-Type header - let axios set it with the boundary parameter
         timeout: 300000
     });
 };

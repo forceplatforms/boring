@@ -68,7 +68,7 @@ class Violation(BaseModel):
     # Related Documents (with embedded data for denormalization)
     source_document_id = Column(
         PostgresUUID(as_uuid=True),
-        ForeignKey("documents.id", ondelete="CASCADE"),
+        ForeignKey("ingested_documents.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
         comment="ID of the source document (e.g., CISO report)",
@@ -91,7 +91,7 @@ class Violation(BaseModel):
 
     target_document_id = Column(
         PostgresUUID(as_uuid=True),
-        ForeignKey("documents.id", ondelete="CASCADE"),
+        ForeignKey("ingested_documents.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
         comment="ID of the target document (e.g., SEC filing)",
