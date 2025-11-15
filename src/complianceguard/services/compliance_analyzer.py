@@ -299,43 +299,132 @@ class ComplianceAnalyzer:
         self, search_results: list[tuple]
     ) -> str:
         """
-        Extract text from search results using Landing AI with caching.
+        Extract text from search results using cached LandingAI extraction.
 
         Args:
-            search_results: List of (score, page_num, filepath, page_url) tuples
+            search_results: List of (score, doc_id, filepath, page_url, file_hash) tuples
 
         Returns:
-            Combined text from all pages
+            Combined text from all pages with extracted content from LandingAI
         """
         if not search_results:
             return ""
 
+        from complianceguard.crud import document_chunk as chunk_crud
+        from complianceguard.crud.ingested_document import get_ingested_document_by_hash
+
         text_parts = []
 
-        for score, doc_id, filepath, page_url, file_hash in search_results:
-            # Try to get text from database cache first
-            # We need to get the document_id from filepath
-            # This is a simplification - in production, you'd want to:
-            # 1. Query IngestedDocument table by filepath or page_url
-            # 2. Get document_id from there
-            # 3. Then query DocumentChunk
-
-            # For now, we'll use the page_url to fetch from Landing AI
-            # or extract from the image directly
-
-            # Simplified approach: just use page_url as identifier
-            # In a real implementation, you'd look up the document and check chunks
+        for score, milvus_doc_id, filepath, page_url, file_hash in search_results:
             logger.info(
-                f"[COMPLIANCE] Extracting text from doc_id {doc_id} "
+                f"[COMPLIANCE] Extracting text from milvus_doc_id {milvus_doc_id} "
                 f"(score: {score:.4f}, file_hash: {file_hash[:16]}...)"
             )
 
-            # TODO: Add caching logic by querying DocumentChunk table
-            # For now, we'll just add the page reference
-            text_parts.append(
-                f"[Document ID {doc_id} from {filepath} (relevance: {score:.2f})]\n"
-                f"[Text extraction from page images not yet implemented in this version]\n"
-            )
+            try:
+                # First, get the actual document UUID using file_hash
+                document = await get_ingested_document_by_hash(self.db, file_hash)
+                if not document:
+                    logger.warning(
+                        f"[COMPLIANCE] No document found with file_hash {file_hash[:16]}..."
+                    )
+                    text_parts.append(
+                        f"[Document: {filepath}, Relevance: {score:.2f}]\n"
+                        f"[Document not found in database]"
+                    )
+                    continue
+
+                document_uuid = document.id
+
+                # Extract page number from page_url
+                # page_url format: /path/to/file.pdf#page=N
+                page_number = 1  # Default to page 1
+                if "#page=" in page_url:
+                    try:
+                        page_number = int(page_url.split("#page=")[1])
+                    except (IndexError, ValueError):
+                        logger.warning(f"Could not parse page number from {page_url}")
+
+                # Query DocumentChunk table for the extracted LandingAI text
+                try:
+                    chunks = await chunk_crud.get_chunks_by_page(
+                        db=self.db,
+                        document_id=document_uuid,
+                        page_number=page_number,
+                    )
+                except Exception as db_error:
+                    logger.error(
+                        f"[COMPLIANCE] Database error querying chunks for doc {document_uuid}, "
+                        f"page {page_number}: {db_error}"
+                    )
+                    # Rollback the transaction on error
+                    await self.db.rollback()
+                    chunks = []
+
+                if chunks:
+                    # Combine all chunks from this page
+                    page_text = "\n\n".join([chunk.content for chunk in chunks])
+                    text_parts.append(
+                        f"[Document: {filepath}, Page {page_number}, Relevance: {score:.2f}]\n"
+                        f"{page_text}"
+                    )
+                    logger.info(
+                        f"[COMPLIANCE] ✓ Extracted {len(page_text)} characters from "
+                        f"{len(chunks)} chunk(s) on page {page_number}"
+                    )
+                else:
+                    # No chunks found - provide detailed diagnostic info
+                    logger.warning(
+                        f"[COMPLIANCE] ⚠ No chunks found for document {document_uuid}, page {page_number}"
+                    )
+                    logger.info(
+                        f"[COMPLIANCE] Diagnostic info: file_hash={file_hash[:16]}..., "
+                        f"filepath={filepath}, milvus_doc_id={milvus_doc_id}"
+                    )
+
+                    # Check if document has any chunks at all
+                    try:
+                        from sqlalchemy import select, func
+                        from complianceguard.models.document_chunk import DocumentChunk as ChunkModel
+
+                        total_chunks_query = select(func.count(ChunkModel.id)).where(
+                            ChunkModel.document_id == document_uuid
+                        )
+                        total_chunks_result = await self.db.execute(total_chunks_query)
+                        total_chunks = total_chunks_result.scalar()
+
+                        if total_chunks == 0:
+                            logger.warning(
+                                f"[COMPLIANCE] ⚠ Document {document_uuid} has NO chunks in database - "
+                                f"LandingAI extraction may have failed during ingestion"
+                            )
+                        else:
+                            logger.info(
+                                f"[COMPLIANCE] Document has {total_chunks} total chunks, "
+                                f"but none on page {page_number}"
+                            )
+                    except Exception as diag_error:
+                        logger.error(f"[COMPLIANCE] Error checking chunk count: {diag_error}")
+
+                    text_parts.append(
+                        f"[Document: {filepath}, Page {page_number}, Relevance: {score:.2f}]\n"
+                        f"[No extracted text available - document may not be fully indexed yet]"
+                    )
+
+            except Exception as e:
+                logger.error(
+                    f"[COMPLIANCE] Error extracting text from milvus_doc_id {milvus_doc_id} "
+                    f"(file_hash: {file_hash[:16]}...): {e}"
+                )
+                # Rollback on any error
+                try:
+                    await self.db.rollback()
+                except:
+                    pass
+                text_parts.append(
+                    f"[Document: {filepath}, Relevance: {score:.2f}]\n"
+                    f"[Error extracting text: {str(e)}]"
+                )
 
         return "\n\n".join(text_parts)
 

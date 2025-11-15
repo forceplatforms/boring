@@ -93,6 +93,24 @@ services:
     networks:
       - complianceguard-network
 
+  # Redis - Celery message broker and result backend
+  redis:
+    image: redis:7-alpine
+    container_name: complianceguard-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - complianceguard-network
+
   # Web Application
   web:
     build:
@@ -104,6 +122,8 @@ services:
       postgres:
         condition: service_healthy
       milvus:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     environment:
       # Application
@@ -143,6 +163,13 @@ services:
       - GEMINI_TEMPERATURE=${GEMINI_TEMPERATURE:-0.1}
       - GEMINI_TIMEOUT_SECONDS=${GEMINI_TIMEOUT_SECONDS:-120}
       - GEMINI_MAX_RETRIES=${GEMINI_MAX_RETRIES:-3}
+
+      # Celery Configuration
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - CELERY_TASK_TRACK_STARTED=true
+      - CELERY_TASK_TIME_LIMIT=3600
+      - CELERY_TASK_SOFT_TIME_LIMIT=3300
     volumes:
       # Mount source for hot reload in development
       - ./src:/app/src:ro
@@ -155,6 +182,79 @@ services:
       - complianceguard-network
     command: uvicorn complianceguard.main:app --host 0.0.0.0 --port 8000 --reload
 
+  # Celery Worker - Background task processing
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: complianceguard-celery-worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # All the same environment variables as web service
+      - ENVIRONMENT=development
+      - DEBUG=True
+      - LOG_LEVEL=INFO
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-key-change-this-in-production-min-32-chars}
+      - DATABASE_URL=postgresql://complianceguard:devpassword123@postgres:5432/complianceguard
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - S3_REGION=${S3_REGION:-us-east-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - INDEXING_S3_BUCKET_NAME=${INDEXING_S3_BUCKET_NAME:-complianceguard-page-images}
+      - INDEXING_MILVUS_URI=http://milvus:19530
+      - INDEXING_DEFAULT_COLLECTION=${INDEXING_DEFAULT_COLLECTION:-ingested_documents}
+      - INDEXING_MODAL_URL=${INDEXING_MODAL_URL}
+      - LANDING_AI_API_KEY=${LANDING_AI_API_KEY}
+      - LANDING_AI_BASE_URL=${LANDING_AI_BASE_URL:-https://api.va.landing.ai/v1}
+      - LANDING_AI_TIMEOUT_SECONDS=${LANDING_AI_TIMEOUT_SECONDS:-120}
+      - LANDING_AI_MAX_RETRIES=${LANDING_AI_MAX_RETRIES:-3}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash-exp}
+      - GEMINI_MAX_TOKENS=${GEMINI_MAX_TOKENS:-8000}
+      - GEMINI_TEMPERATURE=${GEMINI_TEMPERATURE:-0.1}
+      - GEMINI_TIMEOUT_SECONDS=${GEMINI_TIMEOUT_SECONDS:-120}
+      - GEMINI_MAX_RETRIES=${GEMINI_MAX_RETRIES:-3}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - CELERY_TASK_TRACK_STARTED=true
+      - CELERY_TASK_TIME_LIMIT=3600
+      - CELERY_TASK_SOFT_TIME_LIMIT=3300
+    volumes:
+      - ./src:/app/src:ro
+      - ./migrations:/app/migrations:ro
+      - ~/.aws:/root/.aws:ro
+    networks:
+      - complianceguard-network
+    command: celery -A complianceguard.celery_app worker --loglevel=info --concurrency=2
+
+  # Flower - Celery monitoring dashboard
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: complianceguard-flower
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - FLOWER_PORT=5555
+      - FLOWER_BASIC_AUTH=${FLOWER_BASIC_AUTH:-admin:admin}
+    ports:
+      - "5555:5555"
+    networks:
+      - complianceguard-network
+    command: celery -A complianceguard.celery_app flower --port=5555
+
 networks:
   complianceguard-network:
     driver: bridge
@@ -164,3 +264,4 @@ volumes:
   etcd_data:
   minio_data:
   milvus_data:
+  redis_data:

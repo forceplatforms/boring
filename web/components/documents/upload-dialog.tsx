@@ -266,7 +266,7 @@ export function UploadDialog({
               </div>
               <Progress value={uploadProgress} className="h-2" />
               <p className="text-xs text-muted-foreground text-center">
-                This may take several minutes for large files. Please don't close this window.
+                Uploading files to server. Processing will continue in background.
               </p>
             </div>
           )}

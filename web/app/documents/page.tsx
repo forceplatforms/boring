@@ -18,8 +18,17 @@ import type { UploadProgress } from "@/lib/api/documents";
 export default function DocumentsPage() {
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
 
-  // Fetch documents and stats
-  const { data: documents, isLoading, error, refetch } = useDocuments();
+  // Fetch documents and stats with polling for pending/processing documents
+  const { data: documents, isLoading, error, refetch } = useDocuments({}, {
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      // Poll every 3 seconds if there are documents being processed
+      const hasProcessing = data?.items?.some(
+        (doc) => doc.indexing_status === "pending" || doc.indexing_status === "indexing"
+      );
+      return hasProcessing ? 3000 : false;
+    },
+  });
   const { data: stats } = useDocumentStats();
 
   // Mutations
@@ -44,7 +53,7 @@ export default function DocumentsPage() {
 
       setUploadDialogOpen(false);
       toast.success("Upload successful!", {
-        description: `${files.length} file(s) uploaded and indexed successfully`,
+        description: `${files.length} file(s) uploaded. Processing in background...`,
       });
     } catch (error: any) {
       // Only show error if not cancelled

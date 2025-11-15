@@ -1,15 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle, MoreVertical, Eye, Check } from "lucide-react";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { AlertTriangle, Eye, Check, MoreVertical, FileText, Calendar, TrendingUp } from "lucide-react";
+import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -28,54 +21,78 @@ interface ViolationsTableProps {
   isUpdating?: boolean;
 }
 
-function getSeverityVariant(
-  severity: string
-): "critical" | "high" | "medium" | "low" {
+function getSeverityConfig(severity: string) {
   switch (severity) {
     case "critical":
-      return "critical";
+      return {
+        variant: "critical" as const,
+        bg: "bg-red-500/10",
+        border: "border-red-500/20",
+        icon: "text-red-600",
+      };
     case "high":
-      return "high";
+      return {
+        variant: "high" as const,
+        bg: "bg-orange-500/10",
+        border: "border-orange-500/20",
+        icon: "text-orange-600",
+      };
     case "medium":
-      return "medium";
+      return {
+        variant: "medium" as const,
+        bg: "bg-yellow-500/10",
+        border: "border-yellow-500/20",
+        icon: "text-yellow-600",
+      };
     case "low":
-      return "low";
+      return {
+        variant: "low" as const,
+        bg: "bg-blue-500/10",
+        border: "border-blue-500/20",
+        icon: "text-blue-600",
+      };
     default:
-      return "low";
+      return {
+        variant: "low" as const,
+        bg: "bg-gray-500/10",
+        border: "border-gray-500/20",
+        icon: "text-gray-600",
+      };
   }
 }
 
-function getStatusVariant(status: string) {
+function getStatusConfig(status: string) {
   switch (status) {
     case "open":
-      return "destructive";
+      return {
+        variant: "destructive" as const,
+        label: "Open",
+      };
     case "assigned":
-      return "warning";
+      return {
+        variant: "warning" as const,
+        label: "Assigned",
+      };
     case "in_progress":
-      return "info";
+      return {
+        variant: "info" as const,
+        label: "In Progress",
+      };
     case "remediated":
-      return "success";
+      return {
+        variant: "success" as const,
+        label: "Remediated",
+      };
     case "false_positive":
-      return "secondary";
+      return {
+        variant: "secondary" as const,
+        label: "False Positive",
+      };
     default:
-      return "default";
-  }
-}
-
-function getStatusLabel(status: string) {
-  switch (status) {
-    case "open":
-      return "Open";
-    case "assigned":
-      return "Assigned";
-    case "in_progress":
-      return "In Progress";
-    case "remediated":
-      return "Remediated";
-    case "false_positive":
-      return "False Positive";
-    default:
-      return status;
+      return {
+        variant: "default" as const,
+        label: status,
+      };
   }
 }
 
@@ -100,105 +117,143 @@ export function ViolationsTable({
 
   if (violations.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-16 text-center">
-        <div className="flex h-20 w-20 items-center justify-center rounded-full bg-green-500/10 mb-4">
-          <Check className="h-10 w-10 text-green-500" />
+      <Card className="border-none shadow-sm">
+        <div className="flex flex-col items-center justify-center py-24 text-center">
+          <div className="h-24 w-24 rounded-full bg-gradient-to-br from-green-500/20 to-emerald-500/20 flex items-center justify-center mb-6">
+            <Check className="h-12 w-12 text-green-600" />
+          </div>
+          <h3 className="text-xl font-semibold mb-2">No violations found</h3>
+          <p className="text-sm text-muted-foreground max-w-sm">
+            All compliance checks passed successfully. Your documents are fully compliant.
+          </p>
         </div>
-        <h3 className="text-lg font-semibold mb-2">No violations found</h3>
-        <p className="text-sm text-muted-foreground max-w-sm">
-          All compliance checks passed successfully
-        </p>
-      </div>
+      </Card>
     );
   }
 
   return (
-    <div className="rounded-lg border border-border overflow-hidden">
-      <Table>
-        <TableHeader>
-          <TableRow className="hover:bg-transparent">
-            <TableHead className="w-[35%]">Requirement</TableHead>
-            <TableHead>Severity</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>Document</TableHead>
-            <TableHead>Detected</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {violations.map((violation) => (
-            <TableRow key={violation.id} className="group">
-              <TableCell>
-                <div className="flex items-start gap-3">
-                  <AlertTriangle className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium line-clamp-2">
-                      {violation.rule_citation}
-                    </p>
-                    {violation.finding_summary && (
-                      <p className="text-xs text-muted-foreground mt-1 line-clamp-1">
-                        {violation.finding_summary}
-                      </p>
-                    )}
+    <div className="space-y-4">
+      {violations.map((violation) => {
+        const severityConfig = getSeverityConfig(violation.severity);
+        const statusConfig = getStatusConfig(violation.status);
+
+        return (
+          <Card
+            key={violation.id}
+            className={`group relative overflow-hidden border-l-4 ${severityConfig.border} hover:shadow-lg transition-all duration-200 cursor-pointer`}
+            onClick={() => onView && onView(violation)}
+          >
+            <div className="p-6">
+              <div className="flex items-start justify-between gap-6">
+                {/* Left Content */}
+                <div className="flex-1 min-w-0 space-y-4">
+                  {/* Header */}
+                  <div className="flex items-start gap-4">
+                    <div className={`h-12 w-12 rounded-xl ${severityConfig.bg} flex items-center justify-center shrink-0`}>
+                      <AlertTriangle className={`h-6 w-6 ${severityConfig.icon}`} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Badge variant={severityConfig.variant} className="text-xs font-semibold">
+                          {violation.severity.toUpperCase()}
+                        </Badge>
+                        <Badge variant={statusConfig.variant} className="text-xs">
+                          {statusConfig.label}
+                        </Badge>
+                        {violation.confidence_score !== null && (
+                          <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                            <TrendingUp className="h-3 w-3" />
+                            <span>{Math.round(violation.confidence_score * 100)}% confidence</span>
+                          </div>
+                        )}
+                      </div>
+                      <h3 className="text-lg font-semibold leading-tight mb-2">
+                        {violation.rule_citation}
+                      </h3>
+                      {violation.finding_summary && (
+                        <p className="text-sm text-muted-foreground line-clamp-2">
+                          {violation.finding_summary}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Metadata */}
+                  <div className="flex items-center gap-6 text-sm text-muted-foreground">
+                    <div className="flex items-center gap-2">
+                      <FileText className="h-4 w-4" />
+                      <span className="truncate max-w-[200px]">
+                        {violation.source_document_name || "Unknown document"}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Calendar className="h-4 w-4" />
+                      <span>{formatDate(violation.created_at)}</span>
+                    </div>
                   </div>
                 </div>
-              </TableCell>
-              <TableCell>
-                <Badge variant={getSeverityVariant(violation.severity)}>
-                  {violation.severity}
-                </Badge>
-              </TableCell>
-              <TableCell>
-                <Badge variant={getStatusVariant(violation.status)}>
-                  {getStatusLabel(violation.status)}
-                </Badge>
-              </TableCell>
-              <TableCell>
-                <p className="text-sm truncate max-w-[200px]">
-                  {violation.source_document_name || "Unknown"}
-                </p>
-              </TableCell>
-              <TableCell className="text-sm text-muted-foreground">
-                {formatDate(violation.created_at)}
-              </TableCell>
-              <TableCell className="text-right">
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <MoreVertical className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      onClick={() => onView && onView(violation)}
-                      className="gap-2"
-                    >
-                      <Eye className="h-4 w-4" />
-                      View Details
-                    </DropdownMenuItem>
-                    {violation.status === "open" && (
+
+                {/* Right Actions */}
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onView && onView(violation);
+                    }}
+                    className="gap-2 opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <Eye className="h-4 w-4" />
+                    View Details
+                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                      >
+                        <MoreVertical className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
                       <DropdownMenuItem
-                        onClick={() => handleAcknowledge(violation.id)}
-                        disabled={acknowledgingId === violation.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onView && onView(violation);
+                        }}
                         className="gap-2"
                       >
-                        <Check className="h-4 w-4" />
-                        {acknowledgingId === violation.id
-                          ? "Acknowledging..."
-                          : "Acknowledge"}
+                        <Eye className="h-4 w-4" />
+                        View Details
                       </DropdownMenuItem>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+                      {violation.status === "open" && (
+                        <DropdownMenuItem
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleAcknowledge(violation.id);
+                          }}
+                          disabled={acknowledgingId === violation.id}
+                          className="gap-2"
+                        >
+                          <Check className="h-4 w-4" />
+                          {acknowledgingId === violation.id
+                            ? "Acknowledging..."
+                            : "Acknowledge"}
+                        </DropdownMenuItem>
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </div>
+            </div>
+
+            {/* Hover indicator */}
+            <div className="absolute bottom-0 left-0 right-0 h-1 bg-gradient-to-r from-primary/0 via-primary/50 to-primary/0 opacity-0 group-hover:opacity-100 transition-opacity" />
+          </Card>
+        );
+      })}
     </div>
   );
 }

@@ -11,8 +11,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from complianceguard.crud import scan_job as scan_job_crud
+from complianceguard.crud.compliance_framework import get_compliance_framework
 from complianceguard.database import get_async_db
-from complianceguard.services.compliance_analyzer import analyze_compliance
+from complianceguard.tasks.compliance_scan import process_compliance_scan
 
 router = APIRouter(prefix="/compliance", tags=["Compliance Analysis"])
 
@@ -157,7 +158,6 @@ async def run_compliance_check(
         # If document_index_name is provided, fetch all documents from that index
         document_ids = request.document_ids
         if request.document_index_name:
-            from complianceguard.crud import ingested_document as doc_crud
             from sqlalchemy import select
             from complianceguard.models import IngestedDocument
 
@@ -174,28 +174,55 @@ async def run_compliance_check(
                     detail=f"No documents found in index '{request.document_index_name}'",
                 )
 
-        # Run compliance analysis (this is async but returns immediately with a job ID)
-        scan_job_id = await analyze_compliance(
+        # Validate framework exists and is active
+        framework = await get_compliance_framework(db, request.framework_id)
+        if not framework:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Compliance framework {request.framework_id} not found",
+            )
+        if not framework.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Compliance framework '{framework.name}' is not active",
+            )
+
+        # Create scan job with status="pending"
+        scan_job = await scan_job_crud.create_scan_job(
             db=db,
-            framework_id=request.framework_id,
+            framework=framework.name,
+            scan_type="targeted",
             document_ids=document_ids,
+            configuration={
+                "framework_id": str(request.framework_id),
+                "framework_index_name": framework.framework_index_name,
+                "total_todos": len(framework.compliance_todos),
+            },
             triggered_by_email=request.triggered_by_email,
             triggered_by_name=request.triggered_by_name,
         )
 
+        # Enqueue Celery task for background processing
+        celery_task = process_compliance_scan.delay(
+            scan_job_id=str(scan_job.id),
+            framework_id=str(request.framework_id),
+            document_ids=[str(doc_id) for doc_id in document_ids],
+            triggered_by_email=request.triggered_by_email,
+            triggered_by_name=request.triggered_by_name,
+        )
+
+        # Store Celery task ID in scan job configuration for cancellation
+        scan_job.configuration["celery_task_id"] = celery_task.id
+        await db.commit()
+        await db.refresh(scan_job)
+
         return ComplianceCheckResponse(
-            scan_job_id=scan_job_id,
-            message="Compliance check started successfully",
+            scan_job_id=scan_job.id,
+            message="Compliance check enqueued successfully",
             framework_id=request.framework_id,
             document_count=len(document_ids),
         )
 
-    except ValueError as e:
-        # Framework not found or inactive
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
     except HTTPException:
         # Re-raise HTTP exceptions
         raise

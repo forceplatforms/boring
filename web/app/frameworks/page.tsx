@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { CreateFrameworkDialog } from "@/components/frameworks/create-framework-dialog";
 import { FrameworksTable } from "@/components/frameworks/frameworks-table";
 import { UploadDialog } from "@/components/documents/upload-dialog";
+import { DocumentsStatusCard } from "@/components/frameworks/documents-status-card";
 import {
   useFrameworks,
   useCreateFramework,
@@ -178,6 +179,12 @@ export default function FrameworksPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Recent Documents with Live Status */}
+      <DocumentsStatusCard
+        frameworkIndexName={selectedFramework?.framework_index_name}
+        limit={10}
+      />
 
       {/* Error State */}
       {error && (

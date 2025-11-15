@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from complianceguard.celery_app import app as celery_app
 from complianceguard.crud import scan_job as scan_job_crud
 from complianceguard.database import get_async_db
 from complianceguard.models.scan_job import ScanJob
@@ -345,6 +346,13 @@ async def cancel_scan(
             detail=f"Scan is {scan.status} and cannot be cancelled",
         )
 
+    # Revoke Celery task if it exists
+    celery_task_id = scan.configuration.get("celery_task_id") if scan.configuration else None
+    if celery_task_id:
+        # Terminate the task and remove it from the queue
+        celery_app.control.revoke(celery_task_id, terminate=True, signal="SIGTERM")
+
+    # Update scan job status to cancelled
     scan = await scan_job_crud.cancel_scan_job(db, scan_id)
 
     return SuccessResponse(
@@ -353,6 +361,7 @@ async def cancel_scan(
         data={
             "scan_id": str(scan_id),
             "violations_found": scan.violations_found if scan else 0,
+            "celery_task_revoked": celery_task_id is not None,
         },
     )
 

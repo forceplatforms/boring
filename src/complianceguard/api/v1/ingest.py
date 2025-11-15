@@ -7,6 +7,7 @@ import logging
 import re
 import time
 from typing import Optional
+from uuid import UUID
 
 from fastapi import (
     APIRouter,
@@ -25,6 +26,7 @@ from complianceguard.crud import ingested_document as ingested_doc_crud
 from complianceguard.database import get_async_db
 from complianceguard.indexing import DocumentIndex
 from complianceguard.models.ingested_document import IngestedDocument
+from complianceguard.tasks.ingest import process_document_indexing
 from complianceguard.schemas.ingested_document import (
     BatchIngestResponse,
     BatchIngestResult,
@@ -223,104 +225,19 @@ async def _process_single_file(
         db_time = time.time() - db_start
         logger.info(f"[INGEST] Database record created in {db_time:.3f}s - document ID: {document.id}")
 
-        # Start background indexing (mark as processing)
-        logger.info(f"[INGEST] Marking document {document.id} as 'indexing'")
-        document.mark_as_indexing()
-        await db.commit()
-        await db.refresh(document)
-        logger.info(f"[INGEST] Document status updated to 'indexing'")
-
-        # Index document in Milvus
-        indexing_start = time.time()
-        try:
-            logger.info(f"[INGEST] Starting Milvus indexing for document {document.id}")
-            # Initialize DocumentIndex
-            logger.info(f"[INGEST] Initializing DocumentIndex with collection: {index_name}")
-            index = DocumentIndex(
-                index_name=index_name,
-                milvus_uri=settings.indexing_milvus_uri,
-            )
-
-            # Download file temporarily and index
-            # The index_document method will:
-            # 1. Convert PDF to images
-            # 2. Generate ColPali embeddings
-            # 3. Upload page images to S3
-            # 4. Insert into Milvus with page URLs
-            from complianceguard.utils.file_storage import get_file_from_s3
-            import tempfile
-            import os
-
-            # Download file from S3
-            logger.info(f"[INGEST] Downloading PDF from S3 for indexing: {s3_key}")
-            download_start = time.time()
-            file_bytes = await get_file_from_s3(s3_key)
-            download_time = time.time() - download_start
-            logger.info(f"[INGEST] PDF downloaded from S3 in {download_time:.3f}s ({len(file_bytes)} bytes)")
-
-            # Save to temporary file
-            logger.info(f"[INGEST] Creating temporary file for PDF processing")
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                tmp_file.write(file_bytes)
-                tmp_file_path = tmp_file.name
-            logger.info(f"[INGEST] Temporary file created: {tmp_file_path}")
-
-            try:
-                # Index document (pass file_hash for metadata lookup)
-                logger.info(f"[INGEST] Starting PDF indexing process (conversion + embeddings + storage)")
-                index_start = time.time()
-                num_pages = await index.index_document(tmp_file_path, file_hash=file_hash)
-                index_time = time.time() - index_start
-                logger.info(f"[INGEST] PDF indexed successfully in {index_time:.3f}s - {num_pages} pages processed")
-
-                # Get page image S3 prefix (with index_name namespace)
-                page_image_prefix = f"pages/{index_name}/{file_hash}/{filename}/"
-                logger.info(f"[INGEST] Page images stored at S3 prefix: {page_image_prefix}")
-
-                # Update document with indexing success
-                logger.info(f"[INGEST] Updating document {document.id} with indexing success info")
-                update_start = time.time()
-                await ingested_doc_crud.update_indexing_info(
-                    db=db,
-                    document_id=document.id,
-                    index_name=index_name,
-                    num_pages=num_pages,
-                    page_image_s3_prefix=page_image_prefix,
-                    status="completed",
-                )
-                update_time = time.time() - update_start
-                logger.info(f"[INGEST] Document indexing info updated in {update_time:.3f}s")
-
-                indexing_total_time = time.time() - indexing_start
-                logger.info(f"[INGEST] ✓ Complete indexing pipeline finished in {indexing_total_time:.3f}s")
-                logger.info(f"[INGEST] Successfully indexed document {document.id} with {num_pages} pages")
-
-            finally:
-                # Clean up temporary file
-                if os.path.exists(tmp_file_path):
-                    logger.info(f"[INGEST] Cleaning up temporary file: {tmp_file_path}")
-                    os.remove(tmp_file_path)
-                    logger.info(f"[INGEST] Temporary file removed")
-
-        except Exception as index_error:
-            # Log error but don't fail the upload
-            indexing_error_time = time.time() - indexing_start
-            logger.error(f"[INGEST] ✗ Indexing failed for document {document.id} after {indexing_error_time:.3f}s")
-            logger.error(f"[INGEST] Error details: {type(index_error).__name__}: {str(index_error)}")
-            logger.exception(f"[INGEST] Full traceback for indexing error:")
-
-            # Update document with indexing failure
-            logger.info(f"[INGEST] Updating document {document.id} with indexing failure status")
-            await ingested_doc_crud.update_indexing_info(
-                db=db,
-                document_id=document.id,
-                index_name=index_name,
-                num_pages=0,
-                page_image_s3_prefix="",
-                status="failed",
-                error_message=str(index_error),
-            )
-            logger.info(f"[INGEST] Document marked as indexing failed in database")
+        # Enqueue Celery task for background indexing
+        logger.info(f"[INGEST] Enqueueing Celery task for document {document.id}")
+        task_enqueue_start = time.time()
+        task = process_document_indexing.delay(
+            document_id=str(document.id),
+            index_name=index_name,
+            s3_key=s3_key,
+            file_hash=file_hash,
+            filename=filename,
+        )
+        task_enqueue_time = time.time() - task_enqueue_start
+        logger.info(f"[INGEST] Celery task enqueued in {task_enqueue_time:.3f}s - task ID: {task.id}")
+        logger.info(f"[INGEST] Document {document.id} will be processed asynchronously by Celery worker")
 
         # Refresh to get latest state
         await db.refresh(document)
@@ -548,6 +465,60 @@ def _ingested_doc_to_summary(doc: IngestedDocument) -> IngestedDocumentSummary:
         created_at=doc.created_at,
         updated_at=doc.updated_at,
     )
+
+
+@router.get(
+    "/{document_id}/status",
+    response_model=IngestDocumentResponse,
+    summary="Get Document Status",
+    description="Poll the current status of a document being processed",
+    responses={
+        200: {"description": "Document status retrieved successfully"},
+        404: {"description": "Document not found"},
+    },
+)
+async def get_document_status(
+    document_id: UUID,
+    db: AsyncSession = Depends(get_async_db),
+):
+    """
+    Get the current processing status of an ingested document.
+
+    This endpoint is used by clients to poll the status of documents that are
+    being processed asynchronously by Celery workers.
+
+    **Status values:**
+    - `pending`: Document uploaded, waiting for processing to start
+    - `indexing`: Document is currently being processed (conversion, embedding, indexing)
+    - `completed`: Document successfully indexed and searchable
+    - `failed`: Processing failed (check error_message field)
+
+    **Args:**
+        document_id: UUID of the document to check
+
+    **Returns:**
+        Document details with current indexing status
+
+    **Example:**
+    ```bash
+    curl -X GET "http://localhost:8000/api/v1/ingest/550e8400-e29b-41d4-a716-446655440000/status"
+    ```
+    """
+    logger.info(f"[STATUS] Checking status for document {document_id}")
+
+    # Get document from database
+    document = await ingested_doc_crud.get_ingested_document(db=db, document_id=document_id)
+
+    if not document:
+        logger.warning(f"[STATUS] Document {document_id} not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document {document_id} not found",
+        )
+
+    logger.info(f"[STATUS] Document {document_id} status: {document.indexing_status}")
+
+    return _ingested_doc_to_response(document)
 
 
 @router.get(
